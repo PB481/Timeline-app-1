@@ -204,13 +204,17 @@ with col5: st.markdown(f'<div class="info-card"><div class="label">Total Headcou
 
 for w in warnings: st.warning(w)
 
-# Gantt Chart (Original Formatting)
+# Gantt Chart (Original Formatting with Datetime Bug Fix)
 st.markdown("### 📊 Lifecycle Timeline (GMT / EST)")
 fig = px.timeline(df_tasks, x_start="Start", x_end="End", y="Task", color="Cat", color_discrete_map=CATEGORY_COLORS, hover_data=["Hub"])
 fig.update_yaxes(autorange="reversed")
-fig.add_vline(x=VALUATION_POINT, line_dash="dash", line_color="#ff9933", annotation_text="VP 16:00 GMT", annotation_position="top left")
-fig.add_vline(x=NAV_DEADLINE, line_dash="dash", line_color="#ff4444", annotation_text="SLA 09:00 GMT", annotation_position="top left")
-fig.add_vline(x=datetime.combine(T_DATE, time(13,0)), line_dash="dot", line_color="#8899aa", annotation_text="US Market Opens (08:00 EST)")
+
+# Plotly bug fix: Convert datetimes to timestamps (ms) for annotated vertical lines
+fig.add_vline(x=VALUATION_POINT.timestamp() * 1000, line_dash="dash", line_color="#ff9933", annotation_text="VP 16:00 GMT", annotation_position="top left")
+fig.add_vline(x=NAV_DEADLINE.timestamp() * 1000, line_dash="dash", line_color="#ff4444", annotation_text="SLA 09:00 GMT", annotation_position="top left")
+us_open_dt = datetime.combine(T_DATE, time(13,0))
+fig.add_vline(x=us_open_dt.timestamp() * 1000, line_dash="dot", line_color="#8899aa", annotation_text="US Market Opens (08:00 EST)", annotation_position="bottom right")
+
 fig.update_layout(plot_bgcolor="#0a1628", paper_bgcolor="#0a1628", font=dict(color="#c8d8e8"), height=450, margin=dict(l=10, r=30, t=30, b=30))
 st.plotly_chart(fig, use_container_width=True)
 
