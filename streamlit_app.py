@@ -54,11 +54,15 @@ if 'baseline_names' not in st.session_state:
         "t_pub": "NAV Publication", "b_1": "Batch 1", "b_2": "Batch 2", "b_3": "Batch 3"
     }
 
-# NEW: Baseline Timings Session State
-if 'baseline_times' not in st.session_state:
+# NEW: Multi-Day Baseline Timings Session State
+if 'baseline_times' not in st.session_state or type(st.session_state.baseline_times.get("broker")) == time:
     st.session_state.baseline_times = {
-        "broker": time(16, 30), "ta": time(17, 0), "pricing": time(16, 15),
-        "b1": time(18, 0), "b2": time(2, 0), "b3": time(5, 30)
+        "broker": {"time": time(16, 30), "offset": 0}, 
+        "ta": {"time": time(17, 0), "offset": 0}, 
+        "pricing": {"time": time(16, 15), "offset": 0},
+        "b1": {"time": time(18, 0), "offset": 0}, 
+        "b2": {"time": time(2, 0), "offset": 1}, 
+        "b3": {"time": time(5, 30), "offset": 1}
     }
 
 HUBS = list(st.session_state.hub_dict.keys())
@@ -71,18 +75,23 @@ CATEGORY_COLORS = {
     "Data Ingestion": "#3b82f6", "Batch Run": "#8b5cf6", "Trade Date Processing": "#f59e0b",
     "Reconciliation": "#06b6d4", "Valuation": "#ec4899", "T+1 Review": "#10b981", "Publication": "#00d4aa", "Custom Task": "#eab308"
 }
+CATEGORIES = list(CATEGORY_COLORS.keys())
 
 T_DATE = date.today()
 T1_DATE = T_DATE + timedelta(days=1)
 VALUATION_POINT = datetime.combine(T_DATE, time(16, 0))
 NAV_DEADLINE = datetime.combine(T1_DATE, time(9, 0))
 
+DAY_OPTIONS = ["T", "T+1", "T+2", "T+3", "T+4", "T+5"]
+
 def fmt_gmt(dt: datetime) -> str: return dt.strftime("%H:%M")
-def fmt_est(dt: datetime) -> str: return (dt + timedelta(hours=-5)).strftime("%H:%M")
 def add_mins(dt: datetime, mins: float) -> datetime: return dt + timedelta(minutes=int(mins))
 def get_concurrent_duration(total_workload_mins: float, n_staff: int, overhead: float) -> float:
     if n_staff == 1: return float(total_workload_mins)
     return (total_workload_mins / n_staff) * (1 + (overhead * (n_staff - 1)))
+def get_day_label(dt_start: datetime) -> str:
+    days_diff = (dt_start.date() - T_DATE).days
+    return "T" if days_diff <= 0 else f"T+{days_diff}"
 
 # ---------------------------------------------------------------------
 # Sidebar Configuration
@@ -98,7 +107,6 @@ with st.sidebar:
 
     st.divider()
     st.markdown("## 👥 Operating Model")
-    
     hub_trade = st.selectbox("Assign: " + st.session_state.baseline_names["t_tp"], HUBS, index=get_hub_idx("India"))
     staff_trade = st.slider("Staff Count", 1, 50, 10, key="s_tr")
     
@@ -113,37 +121,46 @@ with st.sidebar:
     st.divider()
     st.markdown("## ✏️ Data Management")
 
-    # --- NEW FEATURE: EDIT BASELINE TIMINGS ---
-    with st.expander("🛠️ Edit Baseline Timings (GMT)"):
+    # 1. EDIT BASELINE TIMINGS & DAYS
+    with st.expander("🛠️ Edit Baseline Timings (T+X)"):
         with st.form("edit_timings_form"):
             st.markdown("**Data Ingestion Assumptions**")
-            e_broker = st.time_input("Broker Files Arrival", st.session_state.baseline_times["broker"])
-            e_pricing = st.time_input("Pricing Feed Arrival", st.session_state.baseline_times["pricing"])
-            e_ta = st.time_input("TA Files Arrival", st.session_state.baseline_times["ta"])
+            c1, c2 = st.columns(2)
+            e_broker_t = c1.time_input("Broker Files", st.session_state.baseline_times["broker"]["time"])
+            e_broker_d = c2.selectbox("Day", DAY_OPTIONS, index=st.session_state.baseline_times["broker"]["offset"], key="bd")
+            
+            c3, c4 = st.columns(2)
+            e_pricing_t = c3.time_input("Pricing Feed", st.session_state.baseline_times["pricing"]["time"])
+            e_pricing_d = c4.selectbox("Day", DAY_OPTIONS, index=st.session_state.baseline_times["pricing"]["offset"], key="pd")
+            
+            c5, c6 = st.columns(2)
+            e_ta_t = c5.time_input("TA Files", st.session_state.baseline_times["ta"]["time"])
+            e_ta_d = c6.selectbox("Day", DAY_OPTIONS, index=st.session_state.baseline_times["ta"]["offset"], key="td")
             
             st.markdown("**System Batch Schedules**")
-            e_b1 = st.time_input("Batch 1 Run (T)", st.session_state.baseline_times["b1"])
-            e_b2 = st.time_input("Batch 2 Run (Overnight)", st.session_state.baseline_times["b2"])
-            e_b3 = st.time_input("Batch 3 Run (Final)", st.session_state.baseline_times["b3"])
+            c7, c8 = st.columns(2)
+            e_b1_t = c7.time_input("Batch 1", st.session_state.baseline_times["b1"]["time"])
+            e_b1_d = c8.selectbox("Day", DAY_OPTIONS, index=st.session_state.baseline_times["b1"]["offset"], key="b1d")
+            
+            c9, c10 = st.columns(2)
+            e_b2_t = c9.time_input("Batch 2", st.session_state.baseline_times["b2"]["time"])
+            e_b2_d = c10.selectbox("Day", DAY_OPTIONS, index=st.session_state.baseline_times["b2"]["offset"], key="b2d")
+            
+            c11, c12 = st.columns(2)
+            e_b3_t = c11.time_input("Batch 3", st.session_state.baseline_times["b3"]["time"])
+            e_b3_d = c12.selectbox("Day", DAY_OPTIONS, index=st.session_state.baseline_times["b3"]["offset"], key="b3d")
             
             if st.form_submit_button("Update System Timings"):
                 st.session_state.baseline_times.update({
-                    "broker": e_broker, "pricing": e_pricing, "ta": e_ta,
-                    "b1": e_b1, "b2": e_b2, "b3": e_b3
+                    "broker": {"time": e_broker_t, "offset": DAY_OPTIONS.index(e_broker_d)},
+                    "pricing": {"time": e_pricing_t, "offset": DAY_OPTIONS.index(e_pricing_d)},
+                    "ta": {"time": e_ta_t, "offset": DAY_OPTIONS.index(e_ta_d)},
+                    "b1": {"time": e_b1_t, "offset": DAY_OPTIONS.index(e_b1_d)},
+                    "b2": {"time": e_b2_t, "offset": DAY_OPTIONS.index(e_b2_d)},
+                    "b3": {"time": e_b3_t, "offset": DAY_OPTIONS.index(e_b3_d)}
                 })
                 st.rerun()
     
-    with st.expander("➕ Add New Hub"):
-        with st.form("hub_add_form", clear_on_submit=True):
-            n_h_name = st.text_input("Full Name (e.g. APAC - SG)")
-            n_h_short = st.text_input("Short Code", max_chars=4)
-            n_h_offset = st.number_input("GMT Offset (Hours)", -12.0, 14.0, 8.0)
-            n_h_rate = st.number_input("Hourly Rate ($)", 10.0, 300.0, 45.0)
-            if st.form_submit_button("Save Hub"):
-                if n_h_name and n_h_short:
-                    st.session_state.hub_dict[n_h_name] = HubInfo(n_h_short, f"GMT{n_h_offset:+g}", n_h_offset, "Custom", n_h_rate, 0.02)
-                    st.rerun()
-
     with st.expander("🛠️ Edit / Manage Hubs"):
         edit_hub_key = st.selectbox("Select Hub to Edit", HUBS)
         if edit_hub_key:
@@ -170,18 +187,28 @@ with st.sidebar:
                             st.rerun()
                         else: st.error("Cannot delete the last hub.")
 
+    # 2. ADD CUSTOM TASK (With Category promotion and Day Selection)
     with st.expander("➕ Add Custom Task"):
         with st.form("task_form", clear_on_submit=True):
             n_t_name = st.text_input("Task Name")
+            n_t_cat = st.selectbox("Task Category (Promote to Baseline)", CATEGORIES, index=CATEGORIES.index("Custom Task"))
             n_t_hub = st.selectbox("Assigned Hub", HUBS)
-            n_t_start = st.time_input("Start Time (GMT)", time(18, 30))
-            n_t_dur = st.number_input("Duration (mins)", 5, 240, 30)
-            n_t_staff = st.number_input("Staff Count", 1, 10, 1)
+            c1, c2 = st.columns(2)
+            n_t_start = c1.time_input("Start Time (GMT)", time(18, 30))
+            n_t_day = c2.selectbox("Day", DAY_OPTIONS, index=0)
+            n_t_dur = st.number_input("Duration (mins)", 5, 1000, 30)
+            n_t_staff = st.number_input("Staff Count", 1, 50, 1)
+            
             if st.form_submit_button("Save Task"):
                 if n_t_name:
-                    st.session_state.custom_tasks.append({"name": n_t_name, "hub": n_t_hub, "time": n_t_start, "dur": n_t_dur, "staff": n_t_staff})
+                    st.session_state.custom_tasks.append({
+                        "name": n_t_name, "cat": n_t_cat, "hub": n_t_hub, 
+                        "time": n_t_start, "offset": DAY_OPTIONS.index(n_t_day), 
+                        "dur": n_t_dur, "staff": n_t_staff
+                    })
                     st.rerun()
 
+    # 3. EDIT CUSTOM TASKS
     if st.session_state.custom_tasks:
         with st.expander("🛠️ Edit Custom Tasks"):
             task_list = [t["name"] for t in st.session_state.custom_tasks]
@@ -191,29 +218,30 @@ with st.sidebar:
                 t_data = st.session_state.custom_tasks[t_idx]
                 with st.form("edit_task_form"):
                     e_t_name = st.text_input("Task Name", t_data["name"])
+                    e_t_cat = st.selectbox("Category", CATEGORIES, index=CATEGORIES.index(t_data.get("cat", "Custom Task")))
                     hub_idx = HUBS.index(t_data["hub"]) if t_data["hub"] in HUBS else 0
                     e_t_hub = st.selectbox("Hub", HUBS, index=hub_idx)
-                    e_t_dur = st.number_input("Duration (mins)", 1, 500, int(t_data["dur"]))
-                    e_t_staff = st.number_input("Staff", 1, 50, int(t_data["staff"]))
                     
                     c1, c2 = st.columns(2)
-                    with c1:
+                    e_t_start = c1.time_input("Start Time", t_data["time"])
+                    e_t_day = c2.selectbox("Day", DAY_OPTIONS, index=t_data.get("offset", 0))
+                    
+                    e_t_dur = st.number_input("Duration (mins)", 1, 1000, int(t_data["dur"]))
+                    e_t_staff = st.number_input("Staff", 1, 50, int(t_data["staff"]))
+                    
+                    colA, colB = st.columns(2)
+                    with colA:
                         if st.form_submit_button("Update Task"):
-                            st.session_state.custom_tasks[t_idx] = {"name": e_t_name, "hub": e_t_hub, "time": t_data["time"], "dur": e_t_dur, "staff": e_t_staff}
+                            st.session_state.custom_tasks[t_idx] = {
+                                "name": e_t_name, "cat": e_t_cat, "hub": e_t_hub, 
+                                "time": e_t_start, "offset": DAY_OPTIONS.index(e_t_day), 
+                                "dur": e_t_dur, "staff": e_t_staff
+                            }
                             st.rerun()
-                    with c2:
+                    with colB:
                         if st.form_submit_button("Delete Task"):
                             st.session_state.custom_tasks.pop(t_idx)
                             st.rerun()
-
-    with st.expander("✏️ Rename Baseline Tasks"):
-        with st.form("rename_form"):
-            new_t_tp = st.text_input("Trade Processing Task", st.session_state.baseline_names["t_tp"])
-            new_t_rec = st.text_input("Reconciliation Task", st.session_state.baseline_names["t_recon"])
-            new_t_nav = st.text_input("NAV Review Task", st.session_state.baseline_names["t_nav"])
-            if st.form_submit_button("Update Names"):
-                st.session_state.baseline_names.update({"t_tp": new_t_tp, "t_recon": new_t_rec, "t_nav": new_t_nav})
-                st.rerun()
 
     if st.button("🗑️ Factory Reset App"):
         st.session_state.clear()
@@ -228,18 +256,13 @@ bn = st.session_state.baseline_names
 hd = st.session_state.hub_dict
 bt = st.session_state.baseline_times
 
-# NOW USING DYNAMIC BASELINE TIMES
-broker_dt = datetime.combine(T_DATE, bt["broker"])
-ta_dt = datetime.combine(T_DATE, bt["ta"])
-pricing_dt = datetime.combine(T_DATE, bt["pricing"])
-batch1_start = datetime.combine(T_DATE, bt["b1"])
-
-# Smart logic for overnight batches: if time is PM, it might still be T_DATE, otherwise T1_DATE
-b2_day = T_DATE if bt["b2"].hour >= 18 else T1_DATE
-batch2_start = datetime.combine(b2_day, bt["b2"])
-
-b3_day = T_DATE if bt["b3"].hour >= 18 else T1_DATE
-batch3_start = datetime.combine(b3_day, bt["b3"])
+# DYNAMIC MULTI-DAY CALCULATIONS
+broker_dt = datetime.combine(T_DATE + timedelta(days=bt["broker"]["offset"]), bt["broker"]["time"])
+ta_dt = datetime.combine(T_DATE + timedelta(days=bt["ta"]["offset"]), bt["ta"]["time"])
+pricing_dt = datetime.combine(T_DATE + timedelta(days=bt["pricing"]["offset"]), bt["pricing"]["time"])
+batch1_start = datetime.combine(T_DATE + timedelta(days=bt["b1"]["offset"]), bt["b1"]["time"])
+batch2_start = datetime.combine(T_DATE + timedelta(days=bt["b2"]["offset"]), bt["b2"]["time"])
+batch3_start = datetime.combine(T_DATE + timedelta(days=bt["b3"]["offset"]), bt["b3"]["time"])
 
 tasks.extend([
     dict(Task=bn["t_broker"], Start=broker_dt, End=add_mins(broker_dt, 5), Hub="Custody", Cat="Data Ingestion", Cost_Raw=0, Staff=0),
@@ -290,13 +313,12 @@ tasks.append(dict(Task=bn["t_pub"], Start=pub_start, End=pub_end, Hub=hub_nav, C
 # Custom Tasks Injection
 for ct in st.session_state.custom_tasks:
     c_hub_name = ct["hub"] if ct["hub"] in hd else list(hd.keys())[0] 
-    t_day = T1_DATE if ct["time"].hour < 12 else T_DATE
-    c_start = datetime.combine(t_day, ct["time"])
+    c_start = datetime.combine(T_DATE + timedelta(days=ct.get("offset", 0)), ct["time"])
     c_hub_info = hd[c_hub_name]
     c_dur = get_concurrent_duration(ct["dur"], ct["staff"], c_hub_info.overhead_factor)
     c_end = add_mins(c_start, c_dur)
     c_cost = (c_dur / 60) * c_hub_info.hourly_rate * ct["staff"]
-    tasks.append(dict(Task=ct["name"], Start=c_start, End=c_end, Hub=c_hub_name, Cat="Custom Task", Cost_Raw=c_cost, Staff=ct["staff"]))
+    tasks.append(dict(Task=ct["name"], Start=c_start, End=c_end, Hub=c_hub_name, Cat=ct.get("cat", "Custom Task"), Cost_Raw=c_cost, Staff=ct["staff"]))
 
 sla_met = pub_end <= NAV_DEADLINE
 df_tasks = pd.DataFrame(tasks)
@@ -314,7 +336,7 @@ col1, col2, col3, col4, col5, col6 = st.columns(6)
 with col1:
     sla_class = "sla-met" if sla_met else "sla-breach"
     st.markdown(f'<div class="sla-card {sla_class}"><div class="sla-label">SLA Status</div><div class="sla-value">{"✅ MET" if sla_met else "❌ BREACH"}</div></div>', unsafe_allow_html=True)
-with col2: st.markdown(f'<div class="info-card"><div class="label">Book Published</div><div class="value">{fmt_gmt(pub_end)} GMT</div></div>', unsafe_allow_html=True)
+with col2: st.markdown(f'<div class="info-card"><div class="label">Book Published</div><div class="value">{get_day_label(pub_end)} {fmt_gmt(pub_end)}</div></div>', unsafe_allow_html=True)
 with col3: 
     buffer = int((NAV_DEADLINE - pub_end).total_seconds() / 60)
     color = "#00d4aa" if buffer >= 0 else "#ff4444"
@@ -326,18 +348,21 @@ with col6: st.markdown(f'<div class="info-card"><div class="label">Unit Economic
 for w in warnings: st.warning(w)
 
 st.markdown("### 📊 Concurrent Lifecycle Timeline")
+# Adjust chart limits dynamically based on latest task
+max_end = df_tasks['End'].max() + timedelta(hours=2)
 fig = px.timeline(df_tasks, x_start="Start", x_end="End", y="Task", color="Cat", color_discrete_map=CATEGORY_COLORS, hover_data=["Hub", "Cost"])
 fig.update_yaxes(autorange="reversed")
-fig.add_vline(x=VALUATION_POINT.timestamp() * 1000, line_dash="dash", line_color="#ff9933", annotation_text="VP 16:00 GMT", annotation_position="top left")
-fig.add_vline(x=NAV_DEADLINE.timestamp() * 1000, line_dash="dash", line_color="#ff4444", annotation_text="SLA 09:00 GMT", annotation_position="top left")
-fig.update_layout(plot_bgcolor="#0a1628", paper_bgcolor="#0a1628", font=dict(color="#c8d8e8"), height=500, margin=dict(l=10, r=30, t=30, b=30))
+fig.add_vline(x=VALUATION_POINT.timestamp() * 1000, line_dash="dash", line_color="#ff9933", annotation_text="VP T 16:00", annotation_position="top left")
+fig.add_vline(x=NAV_DEADLINE.timestamp() * 1000, line_dash="dash", line_color="#ff4444", annotation_text="SLA T+1 09:00", annotation_position="top left")
+fig.update_layout(plot_bgcolor="#0a1628", paper_bgcolor="#0a1628", font=dict(color="#c8d8e8"), height=500, margin=dict(l=10, r=30, t=30, b=30), xaxis=dict(range=[VALUATION_POINT - timedelta(hours=2), max_end]))
 st.plotly_chart(fig, use_container_width=True)
 
 with st.expander("📋 Detailed Workload, Capacity & Unit Economics", expanded=True):
     display_df = df_tasks.copy().sort_values(by="Start")
+    display_df['Day'] = display_df['Start'].apply(get_day_label)
     display_df['Duration'] = ((display_df['End'] - display_df['Start']).dt.total_seconds() / 60).astype(int).astype(str) + " min"
     display_df['Start GMT'] = display_df['Start'].dt.strftime("%H:%M")
     display_df['End GMT'] = display_df['End'].dt.strftime("%H:%M")
     display_df['Cost/Fund'] = (display_df['Cost_Raw'] / total_funds).apply(lambda x: f"${x:.2f}" if x > 0 else "-")
     display_df['Total Cost'] = display_df['Cost_Raw'].apply(lambda x: f"${x:,.2f}" if x > 0 else "-")
-    st.dataframe(display_df[['Task', 'Cat', 'Hub', 'Start GMT', 'End GMT', 'Duration', 'Staff', 'Total Cost', 'Cost/Fund']], use_container_width=True, hide_index=True)
+    st.dataframe(display_df[['Day', 'Task', 'Cat', 'Hub', 'Start GMT', 'End GMT', 'Duration', 'Staff', 'Total Cost', 'Cost/Fund']], use_container_width=True, hide_index=True)
