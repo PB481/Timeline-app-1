@@ -38,7 +38,6 @@ class HubInfo:
     hourly_rate: float
     overhead_factor: float 
 
-# Initialize fully dynamic Hub Dictionary
 if 'hub_dict' not in st.session_state:
     st.session_state.hub_dict = {
         "EMEA - Dublin": HubInfo("DUB", "GMT", 0, "Dublin", 85.0, 0.01),
@@ -46,8 +45,7 @@ if 'hub_dict' not in st.session_state:
         "NAM - New York": HubInfo("NYC", "EST", -5, "New York", 100.0, 0.015),
     }
 
-if 'custom_tasks' not in st.session_state: 
-    st.session_state.custom_tasks = []
+if 'custom_tasks' not in st.session_state: st.session_state.custom_tasks = []
 
 if 'baseline_names' not in st.session_state:
     st.session_state.baseline_names = {
@@ -56,9 +54,14 @@ if 'baseline_names' not in st.session_state:
         "t_pub": "NAV Publication", "b_1": "Batch 1", "b_2": "Batch 2", "b_3": "Batch 3"
     }
 
-HUBS = list(st.session_state.hub_dict.keys())
+# NEW: Baseline Timings Session State
+if 'baseline_times' not in st.session_state:
+    st.session_state.baseline_times = {
+        "broker": time(16, 30), "ta": time(17, 0), "pricing": time(16, 15),
+        "b1": time(18, 0), "b2": time(2, 0), "b3": time(5, 30)
+    }
 
-# Safe default index fetchers
+HUBS = list(st.session_state.hub_dict.keys())
 def get_hub_idx(name_substring):
     for i, h in enumerate(HUBS):
         if name_substring in h: return i
@@ -109,8 +112,27 @@ with st.sidebar:
 
     st.divider()
     st.markdown("## ✏️ Data Management")
+
+    # --- NEW FEATURE: EDIT BASELINE TIMINGS ---
+    with st.expander("🛠️ Edit Baseline Timings (GMT)"):
+        with st.form("edit_timings_form"):
+            st.markdown("**Data Ingestion Assumptions**")
+            e_broker = st.time_input("Broker Files Arrival", st.session_state.baseline_times["broker"])
+            e_pricing = st.time_input("Pricing Feed Arrival", st.session_state.baseline_times["pricing"])
+            e_ta = st.time_input("TA Files Arrival", st.session_state.baseline_times["ta"])
+            
+            st.markdown("**System Batch Schedules**")
+            e_b1 = st.time_input("Batch 1 Run (T)", st.session_state.baseline_times["b1"])
+            e_b2 = st.time_input("Batch 2 Run (Overnight)", st.session_state.baseline_times["b2"])
+            e_b3 = st.time_input("Batch 3 Run (Final)", st.session_state.baseline_times["b3"])
+            
+            if st.form_submit_button("Update System Timings"):
+                st.session_state.baseline_times.update({
+                    "broker": e_broker, "pricing": e_pricing, "ta": e_ta,
+                    "b1": e_b1, "b2": e_b2, "b3": e_b3
+                })
+                st.rerun()
     
-    # 1. ADD CUSTOM HUB
     with st.expander("➕ Add New Hub"):
         with st.form("hub_add_form", clear_on_submit=True):
             n_h_name = st.text_input("Full Name (e.g. APAC - SG)")
@@ -122,7 +144,6 @@ with st.sidebar:
                     st.session_state.hub_dict[n_h_name] = HubInfo(n_h_short, f"GMT{n_h_offset:+g}", n_h_offset, "Custom", n_h_rate, 0.02)
                     st.rerun()
 
-    # 2. EDIT EXISTING HUB (Full Read/Update)
     with st.expander("🛠️ Edit / Manage Hubs"):
         edit_hub_key = st.selectbox("Select Hub to Edit", HUBS)
         if edit_hub_key:
@@ -136,11 +157,9 @@ with st.sidebar:
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.form_submit_button("Update Hub"):
-                        # Update dictionary and handle renames safely
                         st.session_state.hub_dict[e_name] = HubInfo(e_short, f"GMT{e_offset:+g}", e_offset, h_info.city, e_rate, h_info.overhead_factor)
                         if e_name != edit_hub_key: 
                             del st.session_state.hub_dict[edit_hub_key]
-                            # Update any custom tasks relying on the old name
                             for t in st.session_state.custom_tasks:
                                 if t["hub"] == edit_hub_key: t["hub"] = e_name
                         st.rerun()
@@ -151,7 +170,6 @@ with st.sidebar:
                             st.rerun()
                         else: st.error("Cannot delete the last hub.")
 
-    # 3. ADD CUSTOM TASK
     with st.expander("➕ Add Custom Task"):
         with st.form("task_form", clear_on_submit=True):
             n_t_name = st.text_input("Task Name")
@@ -164,7 +182,6 @@ with st.sidebar:
                     st.session_state.custom_tasks.append({"name": n_t_name, "hub": n_t_hub, "time": n_t_start, "dur": n_t_dur, "staff": n_t_staff})
                     st.rerun()
 
-    # 4. EDIT CUSTOM TASKS
     if st.session_state.custom_tasks:
         with st.expander("🛠️ Edit Custom Tasks"):
             task_list = [t["name"] for t in st.session_state.custom_tasks]
@@ -189,7 +206,6 @@ with st.sidebar:
                             st.session_state.custom_tasks.pop(t_idx)
                             st.rerun()
 
-    # 5. RENAME BASELINE TASKS
     with st.expander("✏️ Rename Baseline Tasks"):
         with st.form("rename_form"):
             new_t_tp = st.text_input("Trade Processing Task", st.session_state.baseline_names["t_tp"])
@@ -210,13 +226,20 @@ tasks = []
 warnings = []
 bn = st.session_state.baseline_names
 hd = st.session_state.hub_dict
+bt = st.session_state.baseline_times
 
-broker_dt = datetime.combine(T_DATE, time(16, 30))
-ta_dt = datetime.combine(T_DATE, time(17, 0))
-pricing_dt = datetime.combine(T_DATE, time(16, 15))
-batch1_start = datetime.combine(T_DATE, time(18, 0))
-batch2_start = datetime.combine(T1_DATE, time(2, 0))
-batch3_start = datetime.combine(T1_DATE, time(5, 30))
+# NOW USING DYNAMIC BASELINE TIMES
+broker_dt = datetime.combine(T_DATE, bt["broker"])
+ta_dt = datetime.combine(T_DATE, bt["ta"])
+pricing_dt = datetime.combine(T_DATE, bt["pricing"])
+batch1_start = datetime.combine(T_DATE, bt["b1"])
+
+# Smart logic for overnight batches: if time is PM, it might still be T_DATE, otherwise T1_DATE
+b2_day = T_DATE if bt["b2"].hour >= 18 else T1_DATE
+batch2_start = datetime.combine(b2_day, bt["b2"])
+
+b3_day = T_DATE if bt["b3"].hour >= 18 else T1_DATE
+batch3_start = datetime.combine(b3_day, bt["b3"])
 
 tasks.extend([
     dict(Task=bn["t_broker"], Start=broker_dt, End=add_mins(broker_dt, 5), Hub="Custody", Cat="Data Ingestion", Cost_Raw=0, Staff=0),
@@ -266,7 +289,6 @@ tasks.append(dict(Task=bn["t_pub"], Start=pub_start, End=pub_end, Hub=hub_nav, C
 
 # Custom Tasks Injection
 for ct in st.session_state.custom_tasks:
-    # Safe hub lookup in case a hub was deleted
     c_hub_name = ct["hub"] if ct["hub"] in hd else list(hd.keys())[0] 
     t_day = T1_DATE if ct["time"].hour < 12 else T_DATE
     c_start = datetime.combine(t_day, ct["time"])
