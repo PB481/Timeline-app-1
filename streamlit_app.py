@@ -22,21 +22,34 @@ st.markdown("""
     .info-card .label { font-size: 0.66rem; text-transform: uppercase; color: #667788; margin-bottom: 0.15rem; }
     .info-card .value { font-size: 1rem; font-weight: 600; color: #c8d8e8; }
     .cost-text { color: #85e89d; }
-    .tz-strip { display: flex; gap: 0; border-radius: 10px; overflow: hidden; border: 1px solid #1e2d44; margin-bottom: 1rem; }
-    .tz-cell { flex: 1; padding: 0.7rem 0.6rem; text-align: center; background: #0e1a2e; border-right: 1px solid #1e2d44; }
-    .tz-cell:last-child { border-right: none; }
-    .tz-city { font-size: 0.62rem; text-transform: uppercase; color: #667788; margin-bottom: 0.15rem; }
-    .tz-time { font-size: 1.05rem; font-weight: 700; color: #c8d8e8; }
 </style>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------
-# Session State Initialization (For Dynamic Features)
+# Session State Initialization (For Dynamic & Baseline Features)
 # ---------------------------------------------------------------------
 if 'custom_hubs' not in st.session_state:
     st.session_state.custom_hubs = {}
 if 'custom_tasks' not in st.session_state:
     st.session_state.custom_tasks = []
+
+# Initialize baseline names so they can be edited by the user
+if 'baseline_names' not in st.session_state:
+    st.session_state.baseline_names = {
+        "hub_1": "EMEA - Dublin",
+        "hub_2": "APAC - India",
+        "hub_3": "NAM - New York",
+        "t_broker": "Broker Files",
+        "t_price": "Pricing Feed",
+        "t_ta": "TA Files",
+        "t_tp": "Trade Processing",
+        "t_recon": "Reconciliation",
+        "t_nav": "Final NAV Review",
+        "t_pub": "NAV Publication",
+        "b_1": "Batch 1",
+        "b_2": "Batch 2",
+        "b_3": "Batch 3"
+    }
 
 # ---------------------------------------------------------------------
 # Enhanced Hub Definitions 
@@ -50,14 +63,14 @@ class HubInfo:
     hourly_rate: float
     overhead_factor: float
 
-# Base Hubs
+# Base Hubs using dynamic names from session state
 HUB_DATA = {
-    "EMEA - Dublin":       HubInfo("EMEA-DUB", "GMT", 0, "Dublin", 85.0, 0.05),
-    "APAC - India":        HubInfo("APAC-IND", "IST", +5.5, "Mumbai", 25.0, 0.12),
-    "NAM - New York":      HubInfo("NAM-NYC", "EST", -5, "New York", 100.0, 0.08),
+    st.session_state.baseline_names["hub_1"]: HubInfo("DUB", "GMT", 0, "Dublin", 85.0, 0.05),
+    st.session_state.baseline_names["hub_2"]: HubInfo("IND", "IST", +5.5, "Mumbai", 25.0, 0.12),
+    st.session_state.baseline_names["hub_3"]: HubInfo("NYC", "EST", -5, "New York", 100.0, 0.08),
 }
 
-# Inject Custom Hubs from Session State
+# Inject Custom Hubs
 HUB_DATA.update(st.session_state.custom_hubs)
 HUBS = list(HUB_DATA.keys())
 
@@ -85,26 +98,47 @@ def get_compressed_duration(base_mins: int, n_staff: int, overhead: float) -> fl
 with st.sidebar:
     st.markdown("## ⚙️ Operating Model")
     
-    hub_trade = st.selectbox("Trade Processing", HUBS, index=1)
-    staff_trade = st.slider("Trade Staff", 1, 10, 3, key="s_tr")
+    hub_trade = st.selectbox("Assign: " + st.session_state.baseline_names["t_tp"], HUBS, index=1)
+    staff_trade = st.slider("Staff Count", 1, 10, 3, key="s_tr")
     
-    hub_recon = st.selectbox("Reconciliations", HUBS, index=0)
-    staff_recon = st.slider("Recon Staff", 1, 10, 4, key="s_rc")
+    hub_recon = st.selectbox("Assign: " + st.session_state.baseline_names["t_recon"], HUBS, index=0)
+    staff_recon = st.slider("Staff Count", 1, 10, 4, key="s_rc")
     
-    hub_nav = st.selectbox("NAV Review & Pub", HUBS, index=0)
-    staff_nav = st.slider("Review Staff", 1, 5, 2, key="s_nv")
+    hub_nav = st.selectbox("Assign: " + st.session_state.baseline_names["t_nav"], HUBS, index=0)
+    staff_nav = st.slider("Staff Count", 1, 5, 2, key="s_nv")
     
     st.subheader("⏱️ Base Processing Times")
-    dur_trade = st.slider("Trade Proc. (mins)", 30, 120, 60)
-    dur_recon = st.slider("Recon (mins)", 30, 180, 90)
-    dur_nav = st.slider("NAV Review (mins)", 30, 120, 60)
+    dur_trade = st.slider(st.session_state.baseline_names["t_tp"] + " (mins)", 30, 120, 60)
+    dur_recon = st.slider(st.session_state.baseline_names["t_recon"] + " (mins)", 30, 180, 90)
+    dur_nav = st.slider(st.session_state.baseline_names["t_nav"] + " (mins)", 30, 120, 60)
     latency_gap = st.slider("Hand-off Friction (mins)", 0, 60, 15)
 
-    # --- NEW FEATURE: DYNAMIC DATA ENTRY ---
     st.divider()
-    st.markdown("## ➕ Custom Data Engine")
+    st.markdown("## ✏️ Data Management Engine")
     
-    with st.expander("Add Custom Hub"):
+    # --- NEW FEATURE: RENAME BASELINE DATA ---
+    with st.expander("✏️ Rename Baseline Hubs & Tasks"):
+        with st.form("rename_form"):
+            st.markdown("**Hub Names**")
+            new_h1 = st.text_input("Hub 1", st.session_state.baseline_names["hub_1"])
+            new_h2 = st.text_input("Hub 2", st.session_state.baseline_names["hub_2"])
+            new_h3 = st.text_input("Hub 3", st.session_state.baseline_names["hub_3"])
+            
+            st.markdown("**Task Names**")
+            new_t_tp = st.text_input("Trade Processing Task", st.session_state.baseline_names["t_tp"])
+            new_t_rec = st.text_input("Reconciliation Task", st.session_state.baseline_names["t_recon"])
+            new_t_nav = st.text_input("NAV Review Task", st.session_state.baseline_names["t_nav"])
+            
+            if st.form_submit_button("Update Names"):
+                st.session_state.baseline_names["hub_1"] = new_h1
+                st.session_state.baseline_names["hub_2"] = new_h2
+                st.session_state.baseline_names["hub_3"] = new_h3
+                st.session_state.baseline_names["t_tp"] = new_t_tp
+                st.session_state.baseline_names["t_recon"] = new_t_rec
+                st.session_state.baseline_names["t_nav"] = new_t_nav
+                st.rerun()
+
+    with st.expander("➕ Add Custom Hub"):
         with st.form("hub_form", clear_on_submit=True):
             new_h_name = st.text_input("Full Name (e.g. APAC - SG)")
             new_h_short = st.text_input("Short Code (e.g. SG)", max_chars=4)
@@ -119,7 +153,7 @@ with st.sidebar:
                     )
                     st.rerun()
 
-    with st.expander("Add Custom Task"):
+    with st.expander("➕ Add Custom Task"):
         with st.form("task_form", clear_on_submit=True):
             new_t_name = st.text_input("Task Name")
             new_t_hub = st.selectbox("Assigned Hub", HUBS)
@@ -135,9 +169,8 @@ with st.sidebar:
                     })
                     st.rerun()
 
-    if st.button("🗑️ Clear Custom Data"):
-        st.session_state.custom_hubs = {}
-        st.session_state.custom_tasks = []
+    if st.button("🗑️ Reset All Customizations"):
+        st.session_state.clear()
         st.rerun()
 
 # ---------------------------------------------------------------------
@@ -145,8 +178,8 @@ with st.sidebar:
 # ---------------------------------------------------------------------
 tasks = []
 warnings = []
+bn = st.session_state.baseline_names  # shorthand
 
-# Base Datetimes
 broker_dt = datetime.combine(T_DATE, time(16, 30))
 ta_dt = datetime.combine(T_DATE, time(17, 0))
 pricing_dt = datetime.combine(T_DATE, time(16, 15))
@@ -155,12 +188,12 @@ batch2_start = datetime.combine(T1_DATE, time(2, 0))
 batch3_start = datetime.combine(T1_DATE, time(5, 30))
 
 tasks.extend([
-    dict(Task="Broker Files", Start=broker_dt, End=add_mins(broker_dt, 5), Hub="Custody", Cat="Data Ingestion", Cost=0, Staff=0),
-    dict(Task="Pricing Feed", Start=pricing_dt, End=add_mins(pricing_dt, 5), Hub="Market Data", Cat="Data Ingestion", Cost=0, Staff=0),
-    dict(Task="TA Files", Start=ta_dt, End=add_mins(ta_dt, 5), Hub="Transfer Agency", Cat="Data Ingestion", Cost=0, Staff=0),
-    dict(Task="Batch 1", Start=batch1_start, End=add_mins(batch1_start, 30), Hub="Systems", Cat="Batch Run", Cost=0, Staff=0),
-    dict(Task="Batch 2", Start=batch2_start, End=add_mins(batch2_start, 30), Hub="Systems", Cat="Batch Run", Cost=0, Staff=0),
-    dict(Task="Batch 3", Start=batch3_start, End=add_mins(batch3_start, 30), Hub="Systems", Cat="Batch Run", Cost=0, Staff=0),
+    dict(Task=bn["t_broker"], Start=broker_dt, End=add_mins(broker_dt, 5), Hub="Custody", Cat="Data Ingestion", Cost=0, Staff=0),
+    dict(Task=bn["t_price"], Start=pricing_dt, End=add_mins(pricing_dt, 5), Hub="Market Data", Cat="Data Ingestion", Cost=0, Staff=0),
+    dict(Task=bn["t_ta"], Start=ta_dt, End=add_mins(ta_dt, 5), Hub="Transfer Agency", Cat="Data Ingestion", Cost=0, Staff=0),
+    dict(Task=bn["b_1"], Start=batch1_start, End=add_mins(batch1_start, 30), Hub="Systems", Cat="Batch Run", Cost=0, Staff=0),
+    dict(Task=bn["b_2"], Start=batch2_start, End=add_mins(batch2_start, 30), Hub="Systems", Cat="Batch Run", Cost=0, Staff=0),
+    dict(Task=bn["b_3"], Start=batch3_start, End=add_mins(batch3_start, 30), Hub="Systems", Cat="Batch Run", Cost=0, Staff=0),
 ])
 
 # 1. Trade Processing
@@ -168,11 +201,11 @@ tp_actual_dur = get_compressed_duration(dur_trade, staff_trade, HUB_DATA[hub_tra
 tp_start = max(broker_dt, pricing_dt, VALUATION_POINT)
 tp_end = add_mins(tp_start, tp_actual_dur)
 tp_cost = (tp_actual_dur / 60) * HUB_DATA[hub_trade].hourly_rate * staff_trade
-tasks.append(dict(Task="Trade Processing", Start=tp_start, End=tp_end, Hub=hub_trade, Cat="Trade Date Processing", Cost=tp_cost, Staff=staff_trade))
+tasks.append(dict(Task=bn["t_tp"], Start=tp_start, End=tp_end, Hub=hub_trade, Cat="Trade Date Processing", Cost=tp_cost, Staff=staff_trade))
 
 # Batch 1 Miss Logic
 if tp_end > batch1_start:
-    warnings.append("⚠️ **Batch 1 Missed!** Trade processing finished after 18:00 GMT.")
+    warnings.append(f"⚠️ **{bn['b_1']} Missed!** {bn['t_tp']} finished after 18:00 GMT.")
     recon_base = add_mins(batch2_start, 30)
 else:
     recon_base = add_mins(batch1_start, 30)
@@ -183,7 +216,7 @@ rec_actual_dur = get_compressed_duration(dur_recon, staff_recon, HUB_DATA[hub_re
 recon_start = max(recon_base, ta_dt) + timedelta(minutes=recon_wait)
 recon_end = add_mins(recon_start, rec_actual_dur)
 rec_cost = (rec_actual_dur / 60) * HUB_DATA[hub_recon].hourly_rate * staff_recon
-tasks.append(dict(Task="Reconciliation", Start=recon_start, End=recon_end, Hub=hub_recon, Cat="Reconciliation", Cost=rec_cost, Staff=staff_recon))
+tasks.append(dict(Task=bn["t_recon"], Start=recon_start, End=recon_end, Hub=hub_recon, Cat="Reconciliation", Cost=rec_cost, Staff=staff_recon))
 
 # 3. NAV Review
 nav_wait = latency_gap if hub_recon != hub_nav else 0
@@ -191,24 +224,21 @@ nav_actual_dur = get_compressed_duration(dur_nav, staff_nav, HUB_DATA[hub_nav].o
 nav_start = max(recon_end, add_mins(batch3_start, 30)) + timedelta(minutes=nav_wait)
 nav_end = add_mins(nav_start, nav_actual_dur)
 nav_cost = (nav_actual_dur / 60) * HUB_DATA[hub_nav].hourly_rate * staff_nav
-tasks.append(dict(Task="Final NAV Review", Start=nav_start, End=nav_end, Hub=hub_nav, Cat="T+1 Review", Cost=nav_cost, Staff=staff_nav))
+tasks.append(dict(Task=bn["t_nav"], Start=nav_start, End=nav_end, Hub=hub_nav, Cat="T+1 Review", Cost=nav_cost, Staff=staff_nav))
 
 # 4. Publication
 pub_start = nav_end
 pub_end = add_mins(pub_start, 15)
-tasks.append(dict(Task="NAV Publication", Start=pub_start, End=pub_end, Hub=hub_nav, Cat="Publication", Cost=0, Staff=0))
+tasks.append(dict(Task=bn["t_pub"], Start=pub_start, End=pub_end, Hub=hub_nav, Cat="Publication", Cost=0, Staff=0))
 
-# --- INJECT DYNAMIC CUSTOM TASKS ---
+# Custom Tasks
 for ct in st.session_state.custom_tasks:
-    # If time is before 12:00 PM, assume it happens on T+1 morning
     t_day = T1_DATE if ct["time"].hour < 12 else T_DATE
     c_start = datetime.combine(t_day, ct["time"])
-    
     c_hub_info = HUB_DATA[ct["hub"]]
     c_dur = get_compressed_duration(ct["dur"], ct["staff"], c_hub_info.overhead_factor)
     c_end = add_mins(c_start, c_dur)
     c_cost = (c_dur / 60) * c_hub_info.hourly_rate * ct["staff"]
-    
     tasks.append(dict(Task=ct["name"], Start=c_start, End=c_end, Hub=ct["hub"], Cat="Custom Task", Cost=c_cost, Staff=ct["staff"]))
 
 sla_met = pub_end <= NAV_DEADLINE
@@ -219,9 +249,8 @@ total_headcount = df_tasks['Staff'].sum()
 # ---------------------------------------------------------------------
 # Main Dashboard UI
 # ---------------------------------------------------------------------
-st.markdown('<div class="main-header"><h1>🏦 Extensible UCITS Operations Modeler</h1><p>Dynamic Hub & Task Injection Engine enabled.</p></div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header"><h1>🏦 Customizable UCITS Operations Modeler</h1><p>Full control over terminology, hubs, and dynamic task injection.</p></div>', unsafe_allow_html=True)
 
-# Top Metrics
 col1, col2, col3, col4, col5 = st.columns(5)
 with col1:
     sla_class = "sla-met" if sla_met else "sla-breach"
@@ -236,24 +265,18 @@ with col5: st.markdown(f'<div class="info-card"><div class="label">Total Managed
 
 for w in warnings: st.warning(w)
 
-# Gantt Chart
 st.markdown("### 📊 Lifecycle Timeline")
 fig = px.timeline(df_tasks, x_start="Start", x_end="End", y="Task", color="Cat", color_discrete_map=CATEGORY_COLORS, hover_data=["Hub", "Cost"])
 fig.update_yaxes(autorange="reversed")
-
-# Datetime Plotly Bug Fix
 fig.add_vline(x=VALUATION_POINT.timestamp() * 1000, line_dash="dash", line_color="#ff9933", annotation_text="VP 16:00 GMT", annotation_position="top left")
 fig.add_vline(x=NAV_DEADLINE.timestamp() * 1000, line_dash="dash", line_color="#ff4444", annotation_text="SLA 09:00 GMT", annotation_position="top left")
-
 fig.update_layout(plot_bgcolor="#0a1628", paper_bgcolor="#0a1628", font=dict(color="#c8d8e8"), height=500, margin=dict(l=10, r=30, t=30, b=30))
 st.plotly_chart(fig, use_container_width=True)
 
-# Detailed Schedule
 with st.expander("📋 Detailed Chronological Schedule & Cost Breakdown", expanded=True):
     display_df = df_tasks.copy().sort_values(by="Start")
     display_df['Duration'] = ((display_df['End'] - display_df['Start']).dt.total_seconds() / 60).astype(int).astype(str) + " min"
     display_df['Start GMT'] = display_df['Start'].dt.strftime("%H:%M")
     display_df['End GMT'] = display_df['End'].dt.strftime("%H:%M")
     display_df['Cost'] = display_df['Cost'].apply(lambda x: f"${x:.2f}" if x > 0 else "-")
-    
     st.dataframe(display_df[['Task', 'Cat', 'Hub', 'Start GMT', 'End GMT', 'Duration', 'Staff', 'Cost']], use_container_width=True, hide_index=True)
