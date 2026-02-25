@@ -22,25 +22,12 @@ st.markdown("""
     .info-card .label { font-size: 0.66rem; text-transform: uppercase; color: #667788; margin-bottom: 0.15rem; }
     .info-card .value { font-size: 1rem; font-weight: 600; color: #c8d8e8; }
     .cost-text { color: #85e89d; }
+    .unit-text { color: #fbbf24; font-family: monospace; }
 </style>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------
-# Session State Initialization 
-# ---------------------------------------------------------------------
-if 'custom_hubs' not in st.session_state: st.session_state.custom_hubs = {}
-if 'custom_tasks' not in st.session_state: st.session_state.custom_tasks = []
-
-if 'baseline_names' not in st.session_state:
-    st.session_state.baseline_names = {
-        "hub_1": "EMEA - Dublin", "hub_2": "APAC - India", "hub_3": "NAM - New York",
-        "t_broker": "Broker Files", "t_price": "Pricing Feed", "t_ta": "TA Files",
-        "t_tp": "Trade Processing", "t_recon": "Reconciliation", "t_nav": "Final NAV Review",
-        "t_pub": "NAV Publication", "b_1": "Batch 1", "b_2": "Batch 2", "b_3": "Batch 3"
-    }
-
-# ---------------------------------------------------------------------
-# Enhanced Hub Definitions 
+# Dynamic Database (Session State)
 # ---------------------------------------------------------------------
 @dataclass
 class HubInfo:
@@ -49,16 +36,33 @@ class HubInfo:
     gmt_offset: float
     city: str
     hourly_rate: float
-    overhead_factor: float # Friction added per additional FTE
+    overhead_factor: float 
 
-# Note: Overhead factors reduced to simulate factory-line queues (vs software dev)
-HUB_DATA = {
-    st.session_state.baseline_names["hub_1"]: HubInfo("DUB", "GMT", 0, "Dublin", 85.0, 0.01),
-    st.session_state.baseline_names["hub_2"]: HubInfo("IND", "IST", +5.5, "Mumbai", 25.0, 0.02),
-    st.session_state.baseline_names["hub_3"]: HubInfo("NYC", "EST", -5, "New York", 100.0, 0.015),
-}
-HUB_DATA.update(st.session_state.custom_hubs)
-HUBS = list(HUB_DATA.keys())
+# Initialize fully dynamic Hub Dictionary
+if 'hub_dict' not in st.session_state:
+    st.session_state.hub_dict = {
+        "EMEA - Dublin": HubInfo("DUB", "GMT", 0, "Dublin", 85.0, 0.01),
+        "APAC - India": HubInfo("IND", "IST", +5.5, "Mumbai", 25.0, 0.02),
+        "NAM - New York": HubInfo("NYC", "EST", -5, "New York", 100.0, 0.015),
+    }
+
+if 'custom_tasks' not in st.session_state: 
+    st.session_state.custom_tasks = []
+
+if 'baseline_names' not in st.session_state:
+    st.session_state.baseline_names = {
+        "t_broker": "Broker Files", "t_price": "Pricing Feed", "t_ta": "TA Files",
+        "t_tp": "Trade Processing", "t_recon": "Reconciliation", "t_nav": "Final NAV Review",
+        "t_pub": "NAV Publication", "b_1": "Batch 1", "b_2": "Batch 2", "b_3": "Batch 3"
+    }
+
+HUBS = list(st.session_state.hub_dict.keys())
+
+# Safe default index fetchers
+def get_hub_idx(name_substring):
+    for i, h in enumerate(HUBS):
+        if name_substring in h: return i
+    return 0
 
 CATEGORY_COLORS = {
     "Data Ingestion": "#3b82f6", "Batch Run": "#8b5cf6", "Trade Date Processing": "#f59e0b",
@@ -73,9 +77,7 @@ NAV_DEADLINE = datetime.combine(T1_DATE, time(9, 0))
 def fmt_gmt(dt: datetime) -> str: return dt.strftime("%H:%M")
 def fmt_est(dt: datetime) -> str: return (dt + timedelta(hours=-5)).strftime("%H:%M")
 def add_mins(dt: datetime, mins: float) -> datetime: return dt + timedelta(minutes=int(mins))
-
 def get_concurrent_duration(total_workload_mins: float, n_staff: int, overhead: float) -> float:
-    """Calculates timeline duration by dividing total man-hours across concurrent staff, plus management friction."""
     if n_staff == 1: return float(total_workload_mins)
     return (total_workload_mins / n_staff) * (1 + (overhead * (n_staff - 1)))
 
@@ -84,67 +86,120 @@ def get_concurrent_duration(total_workload_mins: float, n_staff: int, overhead: 
 # ---------------------------------------------------------------------
 with st.sidebar:
     st.markdown("## ⚙️ Volume & Capacity")
-    
-    # --- UPGRADED: Multi-Fund Workload Engine ---
-    total_funds = st.slider("Total Fund Volume", 1, 1000, 100, 
-                            help="The total number of funds in this processing batch. This scales the total required man-hours.")
+    total_funds = st.slider("Total Fund Volume", 1, 1000, 100)
     
     with st.expander("⏱️ Average Time Per Fund", expanded=False):
-        st.markdown("Set the baseline time it takes one FTE to process a **single average fund** at each stage.", 
-                    help="Total Workload = (Funds × Avg Time per Fund). E.g., 100 funds × 5 mins = 500 total minutes of work.")
-        avg_trade = st.number_input(st.session_state.baseline_names["t_tp"] + " (mins/fund)", 1.0, 60.0, 5.0)
-        avg_recon = st.number_input(st.session_state.baseline_names["t_recon"] + " (mins/fund)", 1.0, 60.0, 15.0)
-        avg_nav = st.number_input(st.session_state.baseline_names["t_nav"] + " (mins/fund)", 1.0, 60.0, 10.0)
+        avg_trade = st.number_input(st.session_state.baseline_names["t_tp"] + " (mins)", 1.0, 60.0, 5.0)
+        avg_recon = st.number_input(st.session_state.baseline_names["t_recon"] + " (mins)", 1.0, 60.0, 15.0)
+        avg_nav = st.number_input(st.session_state.baseline_names["t_nav"] + " (mins)", 1.0, 60.0, 10.0)
 
     st.divider()
     st.markdown("## 👥 Operating Model")
     
-    hub_trade = st.selectbox("Assign: " + st.session_state.baseline_names["t_tp"], HUBS, index=1,
-                             help="Select geographic location. Applies the hub's local timezone and cost-per-FTE.")
-    staff_trade = st.slider("Staff Count", 1, 50, 10, key="s_tr",
-                            help="Number of FTEs processing the fund volume concurrently. Divides the total workload, but adds slight coordination overhead.")
+    hub_trade = st.selectbox("Assign: " + st.session_state.baseline_names["t_tp"], HUBS, index=get_hub_idx("India"))
+    staff_trade = st.slider("Staff Count", 1, 50, 10, key="s_tr")
     
-    hub_recon = st.selectbox("Assign: " + st.session_state.baseline_names["t_recon"], HUBS, index=0,
-                             help="Select geographic location. Applies the hub's local timezone and cost-per-FTE.")
-    staff_recon = st.slider("Staff Count", 1, 50, 20, key="s_rc",
-                            help="Number of FTEs processing the fund volume concurrently.")
+    hub_recon = st.selectbox("Assign: " + st.session_state.baseline_names["t_recon"], HUBS, index=get_hub_idx("Dublin"))
+    staff_recon = st.slider("Staff Count", 1, 50, 20, key="s_rc")
     
-    hub_nav = st.selectbox("Assign: " + st.session_state.baseline_names["t_nav"], HUBS, index=0,
-                           help="Select geographic location. Applies the hub's local timezone and cost-per-FTE.")
-    staff_nav = st.slider("Staff Count", 1, 50, 10, key="s_nv",
-                          help="Number of FTEs processing the fund volume concurrently.")
+    hub_nav = st.selectbox("Assign: " + st.session_state.baseline_names["t_nav"], HUBS, index=get_hub_idx("Dublin"))
+    staff_nav = st.slider("Staff Count", 1, 50, 10, key="s_nv")
     
-    latency_gap = st.slider("Inter-Hub Hand-off (mins)", 0, 60, 15,
-                            help="Dead-time (latency) added to the timeline when consecutive tasks are performed by different hubs (e.g., waiting for emails, system syncs). If the same hub does both tasks, this penalty is zero.")
+    latency_gap = st.slider("Inter-Hub Hand-off (mins)", 0, 60, 15)
 
     st.divider()
     st.markdown("## ✏️ Data Management")
-    with st.expander("✏️ Rename Baseline Hubs & Tasks"):
+    
+    # 1. ADD CUSTOM HUB
+    with st.expander("➕ Add New Hub"):
+        with st.form("hub_add_form", clear_on_submit=True):
+            n_h_name = st.text_input("Full Name (e.g. APAC - SG)")
+            n_h_short = st.text_input("Short Code", max_chars=4)
+            n_h_offset = st.number_input("GMT Offset (Hours)", -12.0, 14.0, 8.0)
+            n_h_rate = st.number_input("Hourly Rate ($)", 10.0, 300.0, 45.0)
+            if st.form_submit_button("Save Hub"):
+                if n_h_name and n_h_short:
+                    st.session_state.hub_dict[n_h_name] = HubInfo(n_h_short, f"GMT{n_h_offset:+g}", n_h_offset, "Custom", n_h_rate, 0.02)
+                    st.rerun()
+
+    # 2. EDIT EXISTING HUB (Full Read/Update)
+    with st.expander("🛠️ Edit / Manage Hubs"):
+        edit_hub_key = st.selectbox("Select Hub to Edit", HUBS)
+        if edit_hub_key:
+            h_info = st.session_state.hub_dict[edit_hub_key]
+            with st.form("hub_edit_form"):
+                e_name = st.text_input("Hub Name", edit_hub_key)
+                e_short = st.text_input("Short Code", h_info.short, max_chars=4)
+                e_rate = st.number_input("Hourly Rate ($)", 10.0, 300.0, float(h_info.hourly_rate))
+                e_offset = st.number_input("GMT Offset (Hours)", -12.0, 14.0, float(h_info.gmt_offset))
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.form_submit_button("Update Hub"):
+                        # Update dictionary and handle renames safely
+                        st.session_state.hub_dict[e_name] = HubInfo(e_short, f"GMT{e_offset:+g}", e_offset, h_info.city, e_rate, h_info.overhead_factor)
+                        if e_name != edit_hub_key: 
+                            del st.session_state.hub_dict[edit_hub_key]
+                            # Update any custom tasks relying on the old name
+                            for t in st.session_state.custom_tasks:
+                                if t["hub"] == edit_hub_key: t["hub"] = e_name
+                        st.rerun()
+                with col2:
+                    if st.form_submit_button("Delete Hub"):
+                        if len(st.session_state.hub_dict) > 1:
+                            del st.session_state.hub_dict[edit_hub_key]
+                            st.rerun()
+                        else: st.error("Cannot delete the last hub.")
+
+    # 3. ADD CUSTOM TASK
+    with st.expander("➕ Add Custom Task"):
+        with st.form("task_form", clear_on_submit=True):
+            n_t_name = st.text_input("Task Name")
+            n_t_hub = st.selectbox("Assigned Hub", HUBS)
+            n_t_start = st.time_input("Start Time (GMT)", time(18, 30))
+            n_t_dur = st.number_input("Duration (mins)", 5, 240, 30)
+            n_t_staff = st.number_input("Staff Count", 1, 10, 1)
+            if st.form_submit_button("Save Task"):
+                if n_t_name:
+                    st.session_state.custom_tasks.append({"name": n_t_name, "hub": n_t_hub, "time": n_t_start, "dur": n_t_dur, "staff": n_t_staff})
+                    st.rerun()
+
+    # 4. EDIT CUSTOM TASKS
+    if st.session_state.custom_tasks:
+        with st.expander("🛠️ Edit Custom Tasks"):
+            task_list = [t["name"] for t in st.session_state.custom_tasks]
+            edit_task_name = st.selectbox("Select Task", task_list)
+            if edit_task_name:
+                t_idx = task_list.index(edit_task_name)
+                t_data = st.session_state.custom_tasks[t_idx]
+                with st.form("edit_task_form"):
+                    e_t_name = st.text_input("Task Name", t_data["name"])
+                    hub_idx = HUBS.index(t_data["hub"]) if t_data["hub"] in HUBS else 0
+                    e_t_hub = st.selectbox("Hub", HUBS, index=hub_idx)
+                    e_t_dur = st.number_input("Duration (mins)", 1, 500, int(t_data["dur"]))
+                    e_t_staff = st.number_input("Staff", 1, 50, int(t_data["staff"]))
+                    
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.form_submit_button("Update Task"):
+                            st.session_state.custom_tasks[t_idx] = {"name": e_t_name, "hub": e_t_hub, "time": t_data["time"], "dur": e_t_dur, "staff": e_t_staff}
+                            st.rerun()
+                    with c2:
+                        if st.form_submit_button("Delete Task"):
+                            st.session_state.custom_tasks.pop(t_idx)
+                            st.rerun()
+
+    # 5. RENAME BASELINE TASKS
+    with st.expander("✏️ Rename Baseline Tasks"):
         with st.form("rename_form"):
-            st.markdown("**Hub Names**")
-            new_h1 = st.text_input("Hub 1", st.session_state.baseline_names["hub_1"])
-            new_h2 = st.text_input("Hub 2", st.session_state.baseline_names["hub_2"])
-            new_h3 = st.text_input("Hub 3", st.session_state.baseline_names["hub_3"])
-            st.markdown("**Task Names**")
             new_t_tp = st.text_input("Trade Processing Task", st.session_state.baseline_names["t_tp"])
             new_t_rec = st.text_input("Reconciliation Task", st.session_state.baseline_names["t_recon"])
             new_t_nav = st.text_input("NAV Review Task", st.session_state.baseline_names["t_nav"])
             if st.form_submit_button("Update Names"):
-                st.session_state.baseline_names.update({"hub_1": new_h1, "hub_2": new_h2, "hub_3": new_h3, "t_tp": new_t_tp, "t_recon": new_t_rec, "t_nav": new_t_nav})
+                st.session_state.baseline_names.update({"t_tp": new_t_tp, "t_recon": new_t_rec, "t_nav": new_t_nav})
                 st.rerun()
 
-    with st.expander("➕ Add Custom Hub"):
-        with st.form("hub_form", clear_on_submit=True):
-            new_h_name = st.text_input("Full Name (e.g. APAC - SG)")
-            new_h_short = st.text_input("Short Code (e.g. SG)", max_chars=4)
-            new_h_offset = st.number_input("GMT Offset (Hours)", -12.0, 14.0, 8.0)
-            new_h_rate = st.number_input("Hourly Rate ($)", 10.0, 200.0, 45.0, help="Fully loaded operational cost for 1 FTE per hour.")
-            if st.form_submit_button("Save Hub"):
-                if new_h_name and new_h_short:
-                    st.session_state.custom_hubs[new_h_name] = HubInfo(new_h_short, f"GMT{new_h_offset:+g}", new_h_offset, "Custom", new_h_rate, 0.02)
-                    st.rerun()
-
-    if st.button("🗑️ Reset All Customizations"):
+    if st.button("🗑️ Factory Reset App"):
         st.session_state.clear()
         st.rerun()
 
@@ -154,6 +209,7 @@ with st.sidebar:
 tasks = []
 warnings = []
 bn = st.session_state.baseline_names
+hd = st.session_state.hub_dict
 
 broker_dt = datetime.combine(T_DATE, time(16, 30))
 ta_dt = datetime.combine(T_DATE, time(17, 0))
@@ -163,25 +219,24 @@ batch2_start = datetime.combine(T1_DATE, time(2, 0))
 batch3_start = datetime.combine(T1_DATE, time(5, 30))
 
 tasks.extend([
-    dict(Task=bn["t_broker"], Start=broker_dt, End=add_mins(broker_dt, 5), Hub="Custody", Cat="Data Ingestion", Cost=0, Staff=0),
-    dict(Task=bn["t_price"], Start=pricing_dt, End=add_mins(pricing_dt, 5), Hub="Market Data", Cat="Data Ingestion", Cost=0, Staff=0),
-    dict(Task=bn["t_ta"], Start=ta_dt, End=add_mins(ta_dt, 5), Hub="Transfer Agency", Cat="Data Ingestion", Cost=0, Staff=0),
-    dict(Task=bn["b_1"], Start=batch1_start, End=add_mins(batch1_start, 30), Hub="Systems", Cat="Batch Run", Cost=0, Staff=0),
-    dict(Task=bn["b_2"], Start=batch2_start, End=add_mins(batch2_start, 30), Hub="Systems", Cat="Batch Run", Cost=0, Staff=0),
-    dict(Task=bn["b_3"], Start=batch3_start, End=add_mins(batch3_start, 30), Hub="Systems", Cat="Batch Run", Cost=0, Staff=0),
+    dict(Task=bn["t_broker"], Start=broker_dt, End=add_mins(broker_dt, 5), Hub="Custody", Cat="Data Ingestion", Cost_Raw=0, Staff=0),
+    dict(Task=bn["t_price"], Start=pricing_dt, End=add_mins(pricing_dt, 5), Hub="Market Data", Cat="Data Ingestion", Cost_Raw=0, Staff=0),
+    dict(Task=bn["t_ta"], Start=ta_dt, End=add_mins(ta_dt, 5), Hub="Transfer Agency", Cat="Data Ingestion", Cost_Raw=0, Staff=0),
+    dict(Task=bn["b_1"], Start=batch1_start, End=add_mins(batch1_start, 30), Hub="Systems", Cat="Batch Run", Cost_Raw=0, Staff=0),
+    dict(Task=bn["b_2"], Start=batch2_start, End=add_mins(batch2_start, 30), Hub="Systems", Cat="Batch Run", Cost_Raw=0, Staff=0),
+    dict(Task=bn["b_3"], Start=batch3_start, End=add_mins(batch3_start, 30), Hub="Systems", Cat="Batch Run", Cost_Raw=0, Staff=0),
 ])
 
 # 1. Trade Processing
 tp_workload_mins = total_funds * avg_trade
-tp_actual_dur = get_concurrent_duration(tp_workload_mins, staff_trade, HUB_DATA[hub_trade].overhead_factor)
+tp_actual_dur = get_concurrent_duration(tp_workload_mins, staff_trade, hd[hub_trade].overhead_factor)
 tp_start = max(broker_dt, pricing_dt, VALUATION_POINT)
 tp_end = add_mins(tp_start, tp_actual_dur)
-tp_cost = (tp_actual_dur / 60) * HUB_DATA[hub_trade].hourly_rate * staff_trade
-tasks.append(dict(Task=bn["t_tp"], Start=tp_start, End=tp_end, Hub=hub_trade, Cat="Trade Date Processing", Cost=tp_cost, Staff=staff_trade))
+tp_cost = (tp_actual_dur / 60) * hd[hub_trade].hourly_rate * staff_trade
+tasks.append(dict(Task=bn["t_tp"], Start=tp_start, End=tp_end, Hub=hub_trade, Cat="Trade Date Processing", Cost_Raw=tp_cost, Staff=staff_trade))
 
-# Batch 1 Miss Logic
 if tp_end > batch1_start:
-    warnings.append(f"⚠️ **{bn['b_1']} Missed!** {bn['t_tp']} finished after 18:00 GMT due to high volume. Tasks delayed until Batch 2.")
+    warnings.append(f"⚠️ **{bn['b_1']} Missed!** Tasks delayed until Batch 2.")
     recon_base = add_mins(batch2_start, 30)
 else:
     recon_base = add_mins(batch1_start, 30)
@@ -189,47 +244,62 @@ else:
 # 2. Reconciliation
 recon_workload_mins = total_funds * avg_recon
 recon_wait = latency_gap if hub_trade != hub_recon else 0
-rec_actual_dur = get_concurrent_duration(recon_workload_mins, staff_recon, HUB_DATA[hub_recon].overhead_factor)
+rec_actual_dur = get_concurrent_duration(recon_workload_mins, staff_recon, hd[hub_recon].overhead_factor)
 recon_start = max(recon_base, ta_dt) + timedelta(minutes=recon_wait)
 recon_end = add_mins(recon_start, rec_actual_dur)
-rec_cost = (rec_actual_dur / 60) * HUB_DATA[hub_recon].hourly_rate * staff_recon
-tasks.append(dict(Task=bn["t_recon"], Start=recon_start, End=recon_end, Hub=hub_recon, Cat="Reconciliation", Cost=rec_cost, Staff=staff_recon))
+rec_cost = (rec_actual_dur / 60) * hd[hub_recon].hourly_rate * staff_recon
+tasks.append(dict(Task=bn["t_recon"], Start=recon_start, End=recon_end, Hub=hub_recon, Cat="Reconciliation", Cost_Raw=rec_cost, Staff=staff_recon))
 
 # 3. NAV Review
 nav_workload_mins = total_funds * avg_nav
 nav_wait = latency_gap if hub_recon != hub_nav else 0
-nav_actual_dur = get_concurrent_duration(nav_workload_mins, staff_nav, HUB_DATA[hub_nav].overhead_factor)
+nav_actual_dur = get_concurrent_duration(nav_workload_mins, staff_nav, hd[hub_nav].overhead_factor)
 nav_start = max(recon_end, add_mins(batch3_start, 30)) + timedelta(minutes=nav_wait)
 nav_end = add_mins(nav_start, nav_actual_dur)
-nav_cost = (nav_actual_dur / 60) * HUB_DATA[hub_nav].hourly_rate * staff_nav
-tasks.append(dict(Task=bn["t_nav"], Start=nav_start, End=nav_end, Hub=hub_nav, Cat="T+1 Review", Cost=nav_cost, Staff=staff_nav))
+nav_cost = (nav_actual_dur / 60) * hd[hub_nav].hourly_rate * staff_nav
+tasks.append(dict(Task=bn["t_nav"], Start=nav_start, End=nav_end, Hub=hub_nav, Cat="T+1 Review", Cost_Raw=nav_cost, Staff=staff_nav))
 
 # 4. Publication
 pub_start = nav_end
 pub_end = add_mins(pub_start, 15)
-tasks.append(dict(Task=bn["t_pub"], Start=pub_start, End=pub_end, Hub=hub_nav, Cat="Publication", Cost=0, Staff=0))
+tasks.append(dict(Task=bn["t_pub"], Start=pub_start, End=pub_end, Hub=hub_nav, Cat="Publication", Cost_Raw=0, Staff=0))
+
+# Custom Tasks Injection
+for ct in st.session_state.custom_tasks:
+    # Safe hub lookup in case a hub was deleted
+    c_hub_name = ct["hub"] if ct["hub"] in hd else list(hd.keys())[0] 
+    t_day = T1_DATE if ct["time"].hour < 12 else T_DATE
+    c_start = datetime.combine(t_day, ct["time"])
+    c_hub_info = hd[c_hub_name]
+    c_dur = get_concurrent_duration(ct["dur"], ct["staff"], c_hub_info.overhead_factor)
+    c_end = add_mins(c_start, c_dur)
+    c_cost = (c_dur / 60) * c_hub_info.hourly_rate * ct["staff"]
+    tasks.append(dict(Task=ct["name"], Start=c_start, End=c_end, Hub=c_hub_name, Cat="Custom Task", Cost_Raw=c_cost, Staff=ct["staff"]))
 
 sla_met = pub_end <= NAV_DEADLINE
 df_tasks = pd.DataFrame(tasks)
-total_op_cost = df_tasks['Cost'].sum()
+total_op_cost = df_tasks['Cost_Raw'].sum()
 total_headcount = df_tasks['Staff'].sum()
+unit_cost_overall = total_op_cost / total_funds
+df_tasks['Cost'] = df_tasks['Cost_Raw'].apply(lambda x: f"${x:,.2f}")
 
 # ---------------------------------------------------------------------
 # Main Dashboard UI
 # ---------------------------------------------------------------------
 st.markdown(f'<div class="main-header"><h1>🏦 Enterprise Capacity & Timelines</h1><p>Modeling {total_funds} funds concurrently across {int(total_headcount)} FTEs.</p></div>', unsafe_allow_html=True)
 
-col1, col2, col3, col4, col5 = st.columns(5)
+col1, col2, col3, col4, col5, col6 = st.columns(6)
 with col1:
     sla_class = "sla-met" if sla_met else "sla-breach"
-    st.markdown(f'<div class="sla-card {sla_class}"><div class="sla-label">NAV Delivery SLA</div><div class="sla-value">{"✅ MET" if sla_met else "❌ BREACH"}</div></div>', unsafe_allow_html=True)
-with col2: st.markdown(f'<div class="info-card" title="Time the final fund in the batch is published"><div class="label">Book Published</div><div class="value">{fmt_gmt(pub_end)} GMT</div><div class="sub">{fmt_est(pub_end)} EST</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="sla-card {sla_class}"><div class="sla-label">SLA Status</div><div class="sla-value">{"✅ MET" if sla_met else "❌ BREACH"}</div></div>', unsafe_allow_html=True)
+with col2: st.markdown(f'<div class="info-card"><div class="label">Book Published</div><div class="value">{fmt_gmt(pub_end)} GMT</div></div>', unsafe_allow_html=True)
 with col3: 
     buffer = int((NAV_DEADLINE - pub_end).total_seconds() / 60)
     color = "#00d4aa" if buffer >= 0 else "#ff4444"
     st.markdown(f'<div class="info-card"><div class="label">Buffer to SLA</div><div class="value" style="color:{color}">{buffer} mins</div></div>', unsafe_allow_html=True)
-with col4: st.markdown(f'<div class="info-card" title="Total variable staffing cost to process this batch"><div class="label">Total Variable Cost</div><div class="value cost-text">${total_op_cost:,.2f}</div></div>', unsafe_allow_html=True)
-with col5: st.markdown(f'<div class="info-card"><div class="label">Total Book Volume</div><div class="value">{total_funds} Funds</div></div>', unsafe_allow_html=True)
+with col4: st.markdown(f'<div class="info-card"><div class="label">Total Variable Cost</div><div class="value cost-text">${total_op_cost:,.2f}</div></div>', unsafe_allow_html=True)
+with col5: st.markdown(f'<div class="info-card"><div class="label">Total Volume</div><div class="value">{total_funds} Funds</div></div>', unsafe_allow_html=True)
+with col6: st.markdown(f'<div class="info-card"><div class="label">Unit Economics</div><div class="value unit-text">${unit_cost_overall:,.2f} / Fund</div></div>', unsafe_allow_html=True)
 
 for w in warnings: st.warning(w)
 
@@ -241,10 +311,11 @@ fig.add_vline(x=NAV_DEADLINE.timestamp() * 1000, line_dash="dash", line_color="#
 fig.update_layout(plot_bgcolor="#0a1628", paper_bgcolor="#0a1628", font=dict(color="#c8d8e8"), height=500, margin=dict(l=10, r=30, t=30, b=30))
 st.plotly_chart(fig, use_container_width=True)
 
-with st.expander("📋 Detailed Workload & Cost Breakdown", expanded=True):
+with st.expander("📋 Detailed Workload, Capacity & Unit Economics", expanded=True):
     display_df = df_tasks.copy().sort_values(by="Start")
     display_df['Duration'] = ((display_df['End'] - display_df['Start']).dt.total_seconds() / 60).astype(int).astype(str) + " min"
     display_df['Start GMT'] = display_df['Start'].dt.strftime("%H:%M")
     display_df['End GMT'] = display_df['End'].dt.strftime("%H:%M")
-    display_df['Cost'] = display_df['Cost'].apply(lambda x: f"${x:.2f}" if x > 0 else "-")
-    st.dataframe(display_df[['Task', 'Cat', 'Hub', 'Start GMT', 'End GMT', 'Duration', 'Staff', 'Cost']], use_container_width=True, hide_index=True)
+    display_df['Cost/Fund'] = (display_df['Cost_Raw'] / total_funds).apply(lambda x: f"${x:.2f}" if x > 0 else "-")
+    display_df['Total Cost'] = display_df['Cost_Raw'].apply(lambda x: f"${x:,.2f}" if x > 0 else "-")
+    st.dataframe(display_df[['Task', 'Cat', 'Hub', 'Start GMT', 'End GMT', 'Duration', 'Staff', 'Total Cost', 'Cost/Fund']], use_container_width=True, hide_index=True)
