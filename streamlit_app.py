@@ -324,10 +324,23 @@ with tab_dash:
         c_hub_name = ct["hub"] if ct["hub"] in hd else list(hd.keys())[0] 
         c_start = datetime.combine(T_DATE + timedelta(days=ct.get("offset", 0)), ct["time"])
         c_hub_info = hd[c_hub_name]
-        c_dur = get_concurrent_duration(ct["dur"], ct["staff"], c_hub_info.overhead_factor)
+        
+        # FIX: Treat uploaded durations as exact/literal time elapsed. 
+        c_dur = float(ct["dur"])
         c_end = add_mins(c_start, c_dur)
+        
+        # Calculate cost based on exact duration * staff * rate
         c_cost = (c_dur / 60) * c_hub_info.hourly_rate * ct["staff"]
-        tasks.append(dict(Task=ct["name"], Start=c_start, End=c_end, Hub=c_hub_name, Cat=ct.get("cat", "Custom Task"), Cost_Raw=c_cost, Staff=ct["staff"]))
+        
+        tasks.append(dict(
+            Task=ct["name"], 
+            Start=c_start, 
+            End=c_end, 
+            Hub=c_hub_name, 
+            Cat=ct.get("cat", "Custom Task"), 
+            Cost_Raw=c_cost, 
+            Staff=ct["staff"]
+        ))
 
     # Calculations based on final task in array
     if not tasks:
