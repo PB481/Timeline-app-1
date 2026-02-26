@@ -2,10 +2,8 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import io
 from html import escape as html_escape
 from datetime import datetime, timedelta, time, date
-from dataclasses import dataclass
 
 # ---------------------------------------------------------------------
 # Page config & Styling
@@ -29,196 +27,193 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------
-# Dynamic Database (Session State)
+# Constants
 # ---------------------------------------------------------------------
-@dataclass
-class HubInfo:
-    short: str
-    tz_name: str
-    gmt_offset: float
-    city: str
-    hourly_rate: float
-    overhead_factor: float 
-
-if 'hub_dict' not in st.session_state:
-    st.session_state.hub_dict = {
-        "EMEA - Dublin": HubInfo("DUB", "GMT", 0, "Dublin", 85.0, 0.01),
-        "APAC - India": HubInfo("IND", "IST", +5.5, "Mumbai", 25.0, 0.02),
-        "NAM - New York": HubInfo("NYC", "EST", -5, "New York", 100.0, 0.015),
-    }
-
-if 'custom_tasks' not in st.session_state: st.session_state.custom_tasks = []
-if 'use_baseline' not in st.session_state: st.session_state.use_baseline = True
-
-# NEW BASELINE TASKS
-if 'baseline_names' not in st.session_state:
-    st.session_state.baseline_names = {
-        "t_trade_files": "Trade Files",
-        "t_pricing": "Pricing",
-        "t_corp": "Corp Actions",
-        "t_income": "Income",
-        "t_deriv": "Derivatives",
-        "t_cash": "Cash Flow",
-        "t_recon": "Reconciliation",
-        "t_nav": "NAV Review & Publication",
-        "t_reporting": "Reporting",
-        "t_settlement": "Settlement"
-    }
-
-if 'baseline_times' not in st.session_state or "trade_files" not in st.session_state.baseline_times:
-    st.session_state.baseline_times = {
-        "trade_files": {"time": time(16, 30), "offset": 0},
-        "pricing": {"time": time(16, 15), "offset": 0},
-    }
-
-if 'milestones' not in st.session_state:
-    st.session_state.milestones = {
-        "investor": {"time": time(12, 0), "offset": 0}, "trade": {"time": time(14, 0), "offset": 0},
-        "vp": {"time": time(16, 0), "offset": 0}, "nav": {"time": time(9, 0), "offset": 1}
-    }
-
-HUBS = list(st.session_state.hub_dict.keys())
-def get_hub_idx(name_substring):
-    for i, h in enumerate(HUBS):
-        if name_substring in h: return i
-    return 0
-
 CATEGORY_COLORS = {
     "Data Ingestion": "#3b82f6", "Processing": "#f59e0b", "Reconciliation": "#06b6d4",
     "Review & Pub": "#10b981", "Post-NAV": "#8b5cf6", "Custom Task": "#eab308"
 }
 CATEGORIES = list(CATEGORY_COLORS.keys())
-
-def get_t_date() -> date:
-    return date.today()
-
-T_DATE = get_t_date()
 DAY_OPTIONS = ["T", "T+1", "T+2", "T+3", "T+4", "T+5"]
+T_DATE = date.today()
 
 def fmt_gmt(dt: datetime) -> str: return dt.strftime("%H:%M")
 def add_mins(dt: datetime, mins: float) -> datetime: return dt + timedelta(minutes=round(mins))
 def get_concurrent_duration(total_workload_mins: float, n_staff: int, overhead: float) -> float:
-    if n_staff == 1: return float(total_workload_mins)
+    if n_staff <= 1: return float(total_workload_mins)
     return (total_workload_mins / n_staff) * (1 + (overhead * (n_staff - 1)))
 def get_day_label(dt_start: datetime) -> str:
     days_diff = (dt_start.date() - T_DATE).days
     return "T" if days_diff <= 0 else f"T+{days_diff}"
 
 # ---------------------------------------------------------------------
-# Sidebar Configuration (Strictly for Scenario Testing)
+# Session State Defaults
+# ---------------------------------------------------------------------
+DEFAULT_HUBS = pd.DataFrame([
+    {"Hub Name": "EMEA - Dublin", "Short": "DUB", "City": "Dublin", "GMT Offset": 0.0, "Hourly Rate ($)": 85.0, "Overhead Factor": 0.01},
+    {"Hub Name": "APAC - India",  "Short": "IND", "City": "Mumbai", "GMT Offset": 5.5, "Hourly Rate ($)": 25.0, "Overhead Factor": 0.02},
+    {"Hub Name": "NAM - New York","Short": "NYC", "City": "New York","GMT Offset": -5.0,"Hourly Rate ($)": 100.0,"Overhead Factor": 0.015},
+])
+
+DEFAULT_MILESTONES = pd.DataFrame([
+    {"Milestone": "Investor Cutoff",  "Time": time(12, 0), "Day": "T"},
+    {"Milestone": "Trade Cutoff",     "Time": time(14, 0), "Day": "T"},
+    {"Milestone": "Valuation Point",  "Time": time(16, 0), "Day": "T"},
+    {"Milestone": "NAV Delivery SLA", "Time": time(9, 0),  "Day": "T+1"},
+])
+
+DEFAULT_BASELINE = pd.DataFrame([
+    {"Task": "Trade Files",            "Category": "Data Ingestion",  "Hub": "Custody",          "Staff": 0,  "Avg Mins/Fund": 0.0, "Fixed Mins": 5,  "Start Time": time(16,30), "Day": "T",  "Enabled": True},
+    {"Task": "Pricing",                "Category": "Data Ingestion",  "Hub": "Market Data",      "Staff": 0,  "Avg Mins/Fund": 0.0, "Fixed Mins": 5,  "Start Time": time(16,15), "Day": "T",  "Enabled": True},
+    {"Task": "Corp Actions",           "Category": "Processing",      "Hub": "APAC - India",     "Staff": 15, "Avg Mins/Fund": 3.0, "Fixed Mins": 0,  "Start Time": time(0,0),   "Day": "T",  "Enabled": True},
+    {"Task": "Income",                 "Category": "Processing",      "Hub": "APAC - India",     "Staff": 15, "Avg Mins/Fund": 2.0, "Fixed Mins": 0,  "Start Time": time(0,0),   "Day": "T",  "Enabled": True},
+    {"Task": "Derivatives",            "Category": "Processing",      "Hub": "APAC - India",     "Staff": 15, "Avg Mins/Fund": 8.0, "Fixed Mins": 0,  "Start Time": time(0,0),   "Day": "T",  "Enabled": True},
+    {"Task": "Cash Flow",              "Category": "Processing",      "Hub": "APAC - India",     "Staff": 15, "Avg Mins/Fund": 4.0, "Fixed Mins": 0,  "Start Time": time(0,0),   "Day": "T",  "Enabled": True},
+    {"Task": "Reconciliation",         "Category": "Reconciliation",  "Hub": "EMEA - Dublin",    "Staff": 20, "Avg Mins/Fund": 15.0,"Fixed Mins": 0,  "Start Time": time(0,0),   "Day": "T",  "Enabled": True},
+    {"Task": "NAV Review & Publication","Category": "Review & Pub",   "Hub": "EMEA - Dublin",    "Staff": 10, "Avg Mins/Fund": 10.0,"Fixed Mins": 0,  "Start Time": time(0,0),   "Day": "T",  "Enabled": True},
+    {"Task": "Reporting",              "Category": "Post-NAV",        "Hub": "EMEA - Dublin",    "Staff": 10, "Avg Mins/Fund": 3.0, "Fixed Mins": 0,  "Start Time": time(0,0),   "Day": "T",  "Enabled": True},
+    {"Task": "Settlement",             "Category": "Post-NAV",        "Hub": "EMEA - Dublin",    "Staff": 10, "Avg Mins/Fund": 4.0, "Fixed Mins": 0,  "Start Time": time(0,0),   "Day": "T",  "Enabled": True},
+])
+
+if 'hub_df' not in st.session_state:
+    st.session_state.hub_df = DEFAULT_HUBS.copy()
+if 'milestone_df' not in st.session_state:
+    st.session_state.milestone_df = DEFAULT_MILESTONES.copy()
+if 'baseline_df' not in st.session_state:
+    st.session_state.baseline_df = DEFAULT_BASELINE.copy()
+if 'custom_tasks_df' not in st.session_state:
+    st.session_state.custom_tasks_df = pd.DataFrame(columns=["Task", "Category", "Hub", "Staff", "Start Time", "Day", "Duration Mins", "Enabled"])
+if 'use_baseline' not in st.session_state:
+    st.session_state.use_baseline = True
+
+# ---------------------------------------------------------------------
+# Helper: get hub list from current hub_df
+# ---------------------------------------------------------------------
+def get_hub_names():
+    return st.session_state.hub_df["Hub Name"].tolist()
+
+def get_hub_info(hub_name):
+    """Return (hourly_rate, overhead_factor) for a hub name, with fallback."""
+    df = st.session_state.hub_df
+    match = df[df["Hub Name"] == hub_name]
+    if match.empty:
+        return 0.0, 0.02
+    row = match.iloc[0]
+    return float(row["Hourly Rate ($)"]), float(row["Overhead Factor"])
+
+# ---------------------------------------------------------------------
+# Sidebar (Slim)
 # ---------------------------------------------------------------------
 with st.sidebar:
-    st.markdown("## ⚙️ Scenario Engine")
-    
-    st.session_state.use_baseline = st.toggle("Show Baseline Tasks", value=st.session_state.use_baseline, help="Turn this off to completely hide the standard workflow and only show your custom uploaded tasks.")
-    
+    st.markdown("## Scenario Engine")
+    st.session_state.use_baseline = st.toggle("Show Baseline Tasks", value=st.session_state.use_baseline, help="Toggle the standard waterfall workflow on/off.")
     total_funds = st.slider("Total Fund Volume", 1, 1000, 100)
-    
-    with st.expander("⏱️ Average Time Per Fund (Mins)"):
-        avg_corp = st.number_input("Corp Actions", 1.0, 60.0, 3.0)
-        avg_inc = st.number_input("Income", 1.0, 60.0, 2.0)
-        avg_deriv = st.number_input("Derivatives", 1.0, 60.0, 8.0)
-        avg_cash = st.number_input("Cash Flow", 1.0, 60.0, 4.0)
-        avg_recon = st.number_input("Reconciliation", 1.0, 60.0, 15.0)
-        avg_nav = st.number_input("NAV Review", 1.0, 60.0, 10.0)
-        avg_reporting = st.number_input("Reporting", 1.0, 60.0, 3.0)
-        avg_settlement = st.number_input("Settlement", 1.0, 60.0, 4.0)
-
-    st.divider()
-    st.markdown("## 👥 Hub Assignment")
-    hub_proc = st.selectbox("Data Processing Hub", HUBS, index=get_hub_idx("India"))
-    staff_proc = st.slider("Processing Staff", 1, 50, 15, key="s_pr")
-    
-    hub_recon = st.selectbox("Reconciliation Hub", HUBS, index=get_hub_idx("Dublin"))
-    staff_recon = st.slider("Recon Staff", 1, 50, 20, key="s_rc")
-    
-    hub_nav = st.selectbox("Review & Pub Hub", HUBS, index=get_hub_idx("Dublin"))
-    staff_nav = st.slider("Review Staff", 1, 50, 10, key="s_nv")
-    
     latency_gap = st.slider("Inter-Hub Hand-off (mins)", 0, 60, 15)
 
+    st.divider()
+    if st.button("Factory Reset All Data", type="primary"):
+        st.session_state.clear()
+        st.rerun()
+
 # ---------------------------------------------------------------------
-# Main Application Header & Tabs
+# Main Header & Tabs
 # ---------------------------------------------------------------------
 st.markdown(f'<div class="main-header"><h1>Enterprise Capacity &amp; Timelines</h1><p>Modeling {int(total_funds)} funds concurrently.</p></div>', unsafe_allow_html=True)
 
-tab_dash, tab_config = st.tabs(["📊 Capacity Dashboard", "⚙️ Data & Configuration Manager"])
+tab_dash, tab_config = st.tabs(["Dashboard", "Configuration"])
 
 # =====================================================================
-# TAB 2: DATA & CONFIGURATION MANAGER
+# TAB: CONFIGURATION
 # =====================================================================
 with tab_config:
-    st.markdown("### 🛠️ System Configuration")
-    
+
+    # --- DEADLINES ---
+    st.subheader("Key Deadlines & Milestones")
+    st.caption("Edit times and day offsets directly in the table below.")
+    edited_milestones = st.data_editor(
+        st.session_state.milestone_df,
+        column_config={
+            "Milestone": st.column_config.TextColumn("Milestone", disabled=True, width="medium"),
+            "Time": st.column_config.TimeColumn("Time", format="HH:mm"),
+            "Day": st.column_config.SelectboxColumn("Day", options=DAY_OPTIONS, width="small"),
+        },
+        hide_index=True,
+        use_container_width=True,
+        key="milestone_editor",
+        num_rows="fixed",
+    )
+    st.session_state.milestone_df = edited_milestones
+
+    st.divider()
+
+    # --- HUBS ---
+    st.subheader("Hub Management")
+    st.caption("Edit hub details, add new rows, or remove hubs. Changes apply immediately to the dashboard.")
+    edited_hubs = st.data_editor(
+        st.session_state.hub_df,
+        column_config={
+            "Hub Name": st.column_config.TextColumn("Hub Name", width="medium"),
+            "Short": st.column_config.TextColumn("Short Code", max_chars=4, width="small"),
+            "City": st.column_config.TextColumn("City", width="small"),
+            "GMT Offset": st.column_config.NumberColumn("GMT Offset", min_value=-12.0, max_value=14.0, step=0.5, format="%.1f"),
+            "Hourly Rate ($)": st.column_config.NumberColumn("Rate ($/hr)", min_value=1.0, max_value=500.0, step=1.0, format="$%.0f"),
+            "Overhead Factor": st.column_config.NumberColumn("Overhead", min_value=0.0, max_value=1.0, step=0.005, format="%.3f"),
+        },
+        hide_index=True,
+        use_container_width=True,
+        num_rows="dynamic",
+        key="hub_editor",
+    )
+    st.session_state.hub_df = edited_hubs
+
+    st.divider()
+
+    # --- BASELINE TASKS ---
+    st.subheader("Baseline Workflow Tasks")
+    st.caption("Configure each task's hub, staffing, and timing. Toggle **Enabled** to include/exclude individual tasks. "
+               "**Waterfall tasks** (Avg Mins/Fund > 0) chain sequentially after the Valuation Point. "
+               "**Fixed tasks** (Fixed Mins > 0, like data feeds) start at their specified Start Time.")
+
+    all_hub_options = get_hub_names() + ["Custody", "Market Data"]
+
+    edited_baseline = st.data_editor(
+        st.session_state.baseline_df,
+        column_config={
+            "Task": st.column_config.TextColumn("Task Name", width="medium"),
+            "Category": st.column_config.SelectboxColumn("Category", options=CATEGORIES, width="small"),
+            "Hub": st.column_config.SelectboxColumn("Hub", options=all_hub_options, width="medium"),
+            "Staff": st.column_config.NumberColumn("Staff", min_value=0, max_value=100, step=1),
+            "Avg Mins/Fund": st.column_config.NumberColumn("Avg Mins/Fund", min_value=0.0, max_value=120.0, step=0.5, format="%.1f"),
+            "Fixed Mins": st.column_config.NumberColumn("Fixed Mins", min_value=0, max_value=480, step=1, help="For fixed-duration tasks (data feeds). Set to 0 for waterfall tasks."),
+            "Start Time": st.column_config.TimeColumn("Start Time", format="HH:mm", help="Only used for fixed-duration tasks (data feeds)."),
+            "Day": st.column_config.SelectboxColumn("Day", options=DAY_OPTIONS, width="small"),
+            "Enabled": st.column_config.CheckboxColumn("On", default=True),
+        },
+        hide_index=True,
+        use_container_width=True,
+        num_rows="dynamic",
+        key="baseline_editor",
+    )
+    st.session_state.baseline_df = edited_baseline
+
+    st.divider()
+
+    # --- CSV IMPORT ---
     conf_col1, conf_col2 = st.columns(2)
-    
     with conf_col1:
-        st.subheader("🚩 Key Deadlines & Milestones")
-        with st.form("edit_milestones_form"):
-            m1, m2 = st.columns(2)
-            e_inv_t = m1.time_input("Investor Cutoff", st.session_state.milestones["investor"]["time"])
-            e_inv_d = m2.selectbox("Inv. Day", DAY_OPTIONS, index=st.session_state.milestones["investor"]["offset"])
-            
-            m3, m4 = st.columns(2)
-            e_trd_t = m3.time_input("Trade Cutoff", st.session_state.milestones["trade"]["time"])
-            e_trd_d = m4.selectbox("Trade Day", DAY_OPTIONS, index=st.session_state.milestones["trade"]["offset"])
-            
-            m5, m6 = st.columns(2)
-            e_vp_t = m5.time_input("Valuation Point (VP)", st.session_state.milestones["vp"]["time"])
-            e_vp_d = m6.selectbox("VP Day", DAY_OPTIONS, index=st.session_state.milestones["vp"]["offset"])
-            
-            m7, m8 = st.columns(2)
-            e_nav_t = m7.time_input("NAV Delivery SLA", st.session_state.milestones["nav"]["time"])
-            e_nav_d = m8.selectbox("SLA Day", DAY_OPTIONS, index=st.session_state.milestones["nav"]["offset"])
-            
-            if st.form_submit_button("💾 Save Deadlines"):
-                st.session_state.milestones.update({
-                    "investor": {"time": e_inv_t, "offset": DAY_OPTIONS.index(e_inv_d)},
-                    "trade": {"time": e_trd_t, "offset": DAY_OPTIONS.index(e_trd_d)},
-                    "vp": {"time": e_vp_t, "offset": DAY_OPTIONS.index(e_vp_d)},
-                    "nav": {"time": e_nav_t, "offset": DAY_OPTIONS.index(e_nav_d)}
-                })
-                st.rerun()
-
-        st.subheader("🏢 Hub Management")
-        with st.expander("➕ Add / Edit Hubs", expanded=False):
-            with st.form("hub_add_form", clear_on_submit=True):
-                h1, h2 = st.columns(2)
-                n_h_name = h1.text_input("Full Name (e.g. APAC - SG)")
-                n_h_rate = h2.number_input("Hourly Rate ($)", 10.0, 300.0, 45.0)
-                h3, h4 = st.columns(2)
-                n_h_short = h3.text_input("Short Code", max_chars=4)
-                n_h_offset = h4.number_input("GMT Offset (Hours)", -12.0, 14.0, 8.0)
-                if st.form_submit_button("Save New Hub"):
-                    if n_h_name and n_h_short:
-                        st.session_state.hub_dict[n_h_name] = HubInfo(n_h_short, f"GMT{n_h_offset:+g}", n_h_offset, "Custom", n_h_rate, 0.02)
-                        st.rerun()
-            st.write("---")
-            edit_hub_key = st.selectbox("Select Hub to Delete", HUBS)
-            if st.button("🗑️ Delete Selected Hub"):
-                if len(st.session_state.hub_dict) > 1:
-                    del st.session_state.hub_dict[edit_hub_key]
-                    st.rerun()
-                else: st.error("Cannot delete the last hub.")
-
-    with conf_col2:
-        st.subheader("📁 Bulk Task Import (CSV)")
-        
-        # 1. Generate Template
+        st.subheader("Bulk Task Import (CSV)")
         template_df = pd.DataFrame({
             "Task_Name": ["Bespoke Client Reporting", "Audit Extract"],
             "Category": ["Post-NAV", "Custom Task"],
-            "Hub": [HUBS[0], HUBS[0]],
+            "Hub": [get_hub_names()[0] if get_hub_names() else "EMEA - Dublin", get_hub_names()[0] if get_hub_names() else "EMEA - Dublin"],
             "Start_Time": ["10:30", "11:00"],
-            "Day_Offset": [1, 1], 
+            "Day_Offset": [1, 1],
             "Duration_Mins": [45, 20],
             "Staff_Count": [2, 1]
         })
         csv_template = template_df.to_csv(index=False).encode('utf-8')
-        
-        st.download_button(label="⬇️ Download Data Template", data=csv_template, file_name="task_template.csv", mime="text/csv", help="Download a CSV template to build custom workflows.")
-        
-        # 2. Upload Data (Trigger Baseline Override)
+        st.download_button(label="Download CSV Template", data=csv_template, file_name="task_template.csv", mime="text/csv")
+
         uploaded_file = st.file_uploader("Upload Populated Template (.csv)", type=["csv"])
         if uploaded_file is not None:
             try:
@@ -228,118 +223,149 @@ with tab_config:
                 if missing_cols:
                     st.error(f"Missing required columns: {', '.join(sorted(missing_cols))}")
                 else:
+                    hub_names = get_hub_names()
+                    rows = []
                     errors = []
-                    st.session_state.custom_tasks = []
-
                     for index, row in imported_df.iterrows():
-                        row_num = index + 2  # 1-indexed + header
+                        row_num = index + 2
                         dur_val = int(row["Duration_Mins"])
                         staff_val = int(row["Staff_Count"])
                         offset_val = int(row["Day_Offset"])
                         if dur_val <= 0:
-                            errors.append(f"Row {row_num}: Duration_Mins must be > 0 (got {dur_val})")
-                            continue
+                            errors.append(f"Row {row_num}: Duration_Mins must be > 0"); continue
                         if staff_val <= 0:
-                            errors.append(f"Row {row_num}: Staff_Count must be > 0 (got {staff_val})")
-                            continue
+                            errors.append(f"Row {row_num}: Staff_Count must be > 0"); continue
                         if offset_val < 0:
-                            errors.append(f"Row {row_num}: Day_Offset must be >= 0 (got {offset_val})")
-                            continue
+                            errors.append(f"Row {row_num}: Day_Offset must be >= 0"); continue
 
-                        hub_val = row["Hub"] if row["Hub"] in HUBS else HUBS[0]
+                        hub_val = row["Hub"] if row["Hub"] in hub_names else (hub_names[0] if hub_names else "EMEA - Dublin")
                         cat_val = row["Category"] if row["Category"] in CATEGORIES else "Custom Task"
                         time_val = datetime.strptime(str(row["Start_Time"]).strip(), "%H:%M").time()
-                        st.session_state.custom_tasks.append({
-                            "name": str(row["Task_Name"]), "cat": cat_val, "hub": hub_val,
-                            "time": time_val, "offset": offset_val,
-                            "dur": dur_val, "staff": staff_val
+                        day_label = f"T+{offset_val}" if offset_val > 0 else "T"
+                        rows.append({
+                            "Task": str(row["Task_Name"]), "Category": cat_val, "Hub": hub_val,
+                            "Staff": staff_val, "Start Time": time_val, "Day": day_label,
+                            "Duration Mins": dur_val, "Enabled": True
                         })
 
-                    if errors:
-                        for e in errors:
-                            st.warning(e)
+                    for e in errors:
+                        st.warning(e)
 
-                    st.session_state.use_baseline = False
-                    st.success(f"Imported {len(st.session_state.custom_tasks)} tasks! Baseline tasks have been hidden.")
-                    if st.button("Render Timeline"): st.rerun()
+                    if rows:
+                        st.session_state.custom_tasks_df = pd.DataFrame(rows)
+                        st.session_state.use_baseline = False
+                        st.success(f"Imported {len(rows)} tasks! Baseline tasks hidden.")
+                        if st.button("Render Timeline"):
+                            st.rerun()
             except Exception as e:
-                st.error(f"Error parsing file. Details: {e}")
+                st.error(f"Error parsing file: {e}")
 
-        if st.button("🚨 Factory Reset All Data", type="primary"):
-            st.session_state.clear()
-            st.rerun()
+    with conf_col2:
+        st.subheader("Imported Custom Tasks")
+        st.caption("Edit imported tasks in-place: change hub, staff, timing, or toggle them on/off.")
+        if st.session_state.custom_tasks_df.empty:
+            st.info("No custom tasks imported yet. Upload a CSV to populate this table.")
+        else:
+            edited_custom = st.data_editor(
+                st.session_state.custom_tasks_df,
+                column_config={
+                    "Task": st.column_config.TextColumn("Task Name", width="medium"),
+                    "Category": st.column_config.SelectboxColumn("Category", options=CATEGORIES, width="small"),
+                    "Hub": st.column_config.SelectboxColumn("Hub", options=get_hub_names(), width="medium"),
+                    "Staff": st.column_config.NumberColumn("Staff", min_value=1, max_value=100, step=1),
+                    "Start Time": st.column_config.TimeColumn("Start Time", format="HH:mm"),
+                    "Day": st.column_config.SelectboxColumn("Day", options=DAY_OPTIONS, width="small"),
+                    "Duration Mins": st.column_config.NumberColumn("Duration (mins)", min_value=1, max_value=1440, step=1),
+                    "Enabled": st.column_config.CheckboxColumn("On", default=True),
+                },
+                hide_index=True,
+                use_container_width=True,
+                num_rows="dynamic",
+                key="custom_editor",
+            )
+            st.session_state.custom_tasks_df = edited_custom
 
 # =====================================================================
-# TAB 1: CAPACITY DASHBOARD (Engine & Visuals)
+# TAB: DASHBOARD
 # =====================================================================
 with tab_dash:
     tasks = []
-    bn = st.session_state.baseline_names
-    hd = st.session_state.hub_dict
-    bt = st.session_state.baseline_times
-    ms = st.session_state.milestones
+    ms_df = st.session_state.milestone_df
+    bl_df = st.session_state.baseline_df
 
-    INVESTOR_CUTOFF = datetime.combine(T_DATE + timedelta(days=ms["investor"]["offset"]), ms["investor"]["time"])
-    TRADE_CUTOFF = datetime.combine(T_DATE + timedelta(days=ms["trade"]["offset"]), ms["trade"]["time"])
-    VALUATION_POINT = datetime.combine(T_DATE + timedelta(days=ms["vp"]["offset"]), ms["vp"]["time"])
-    NAV_DEADLINE = datetime.combine(T_DATE + timedelta(days=ms["nav"]["offset"]), ms["nav"]["time"])
+    # --- Parse milestones ---
+    def get_milestone_dt(name):
+        row = ms_df[ms_df["Milestone"] == name]
+        if row.empty:
+            return datetime.combine(T_DATE, time(0, 0))
+        r = row.iloc[0]
+        day_str = str(r["Day"]) if pd.notna(r["Day"]) else "T"
+        offset = int(day_str.replace("T+", "").replace("T", "0")) if "+" in day_str else 0
+        return datetime.combine(T_DATE + timedelta(days=offset), r["Time"])
 
-    def append_waterfall_task(task_name, start_dt, avg_per_fund, hub_name, staff, cat, prev_hub=None):
-        """Build a waterfall task, applying inter-hub latency when the hub changes."""
-        hub_info = hd[hub_name]
-        wait = latency_gap if (prev_hub is not None and prev_hub != hub_name) else 0
-        actual_start = add_mins(start_dt, wait)
-        dur = get_concurrent_duration(total_funds * avg_per_fund, staff, hub_info.overhead_factor)
-        end = add_mins(actual_start, dur)
-        cost = (dur / 60) * hub_info.hourly_rate * staff
-        tasks.append(dict(Task=task_name, Start=actual_start, End=end, Hub=hub_name, Cat=cat, Cost_Raw=cost, Staff=staff))
-        return end, hub_name
+    INVESTOR_CUTOFF = get_milestone_dt("Investor Cutoff")
+    TRADE_CUTOFF = get_milestone_dt("Trade Cutoff")
+    VALUATION_POINT = get_milestone_dt("Valuation Point")
+    NAV_DEADLINE = get_milestone_dt("NAV Delivery SLA")
 
-    # Baseline Waterfall
+    # --- Build baseline waterfall ---
     if st.session_state.use_baseline:
-        # 1. Ingestion (fixed-duration data feeds)
-        trade_dt = datetime.combine(T_DATE + timedelta(days=bt["trade_files"]["offset"]), bt["trade_files"]["time"])
-        pricing_dt = datetime.combine(T_DATE + timedelta(days=bt["pricing"]["offset"]), bt["pricing"]["time"])
+        enabled = bl_df[bl_df["Enabled"] == True].copy()
 
-        tasks.append(dict(Task=bn["t_trade_files"], Start=trade_dt, End=add_mins(trade_dt, 5), Hub="Custody", Cat="Data Ingestion", Cost_Raw=0, Staff=0))
-        tasks.append(dict(Task=bn["t_pricing"], Start=pricing_dt, End=add_mins(pricing_dt, 5), Hub="Market Data", Cat="Data Ingestion", Cost_Raw=0, Staff=0))
+        # Separate fixed tasks (data feeds with a set start time) from waterfall tasks
+        fixed_tasks = enabled[enabled["Fixed Mins"] > 0]
+        waterfall_tasks = enabled[(enabled["Avg Mins/Fund"] > 0) & (enabled["Fixed Mins"] == 0)]
 
-        # Core waterfall starts at max of data arrival or Valuation Point
-        cursor = max(trade_dt, pricing_dt, VALUATION_POINT)
+        # 1. Fixed-duration tasks (data feeds)
+        latest_fixed_end = VALUATION_POINT
+        for _, row in fixed_tasks.iterrows():
+            day_str = str(row["Day"]) if pd.notna(row["Day"]) else "T"
+            offset = int(day_str.replace("T+", "").replace("T", "0")) if "+" in day_str else 0
+            start = datetime.combine(T_DATE + timedelta(days=offset), row["Start Time"])
+            end = add_mins(start, int(row["Fixed Mins"]))
+            tasks.append(dict(Task=row["Task"], Start=start, End=end, Hub=row["Hub"], Cat=row["Category"], Cost_Raw=0, Staff=0))
+            if end > latest_fixed_end:
+                latest_fixed_end = end
+
+        # 2. Waterfall tasks chain sequentially
+        cursor = max(latest_fixed_end, VALUATION_POINT)
         prev_hub = None
 
-        # 2-5. Processing chain (all same hub, so no inter-hub latency)
-        cursor, prev_hub = append_waterfall_task(bn["t_corp"],   cursor, avg_corp,  hub_proc, staff_proc, "Processing", prev_hub)
-        cursor, prev_hub = append_waterfall_task(bn["t_income"], cursor, avg_inc,   hub_proc, staff_proc, "Processing", prev_hub)
-        cursor, prev_hub = append_waterfall_task(bn["t_deriv"],  cursor, avg_deriv, hub_proc, staff_proc, "Processing", prev_hub)
-        cursor, prev_hub = append_waterfall_task(bn["t_cash"],   cursor, avg_cash,  hub_proc, staff_proc, "Processing", prev_hub)
+        for _, row in waterfall_tasks.iterrows():
+            hub_name = row["Hub"]
+            staff = int(row["Staff"])
+            avg = float(row["Avg Mins/Fund"])
+            rate, overhead = get_hub_info(hub_name)
 
-        # 6. Reconciliation (possible hub handoff from processing)
-        cursor, prev_hub = append_waterfall_task(bn["t_recon"], cursor, avg_recon, hub_recon, staff_recon, "Reconciliation", prev_hub)
+            wait = latency_gap if (prev_hub is not None and prev_hub != hub_name) else 0
+            actual_start = add_mins(cursor, wait)
+            dur = get_concurrent_duration(total_funds * avg, max(staff, 1), overhead)
+            end = add_mins(actual_start, dur)
+            cost = (dur / 60) * rate * staff
 
-        # 7. NAV Review & Publication (possible hub handoff from recon)
-        cursor, prev_hub = append_waterfall_task(bn["t_nav"], cursor, avg_nav, hub_nav, staff_nav, "Review & Pub", prev_hub)
+            tasks.append(dict(Task=row["Task"], Start=actual_start, End=end, Hub=hub_name, Cat=row["Category"], Cost_Raw=cost, Staff=staff))
+            cursor = end
+            prev_hub = hub_name
 
-        # 8-9. Post-NAV (same hub as review)
-        cursor, prev_hub = append_waterfall_task(bn["t_reporting"],  cursor, avg_reporting,  hub_nav, staff_nav, "Post-NAV", prev_hub)
-        cursor, prev_hub = append_waterfall_task(bn["t_settlement"], cursor, avg_settlement, hub_nav, staff_nav, "Post-NAV", prev_hub)
+    # --- Custom tasks ---
+    ct_df = st.session_state.custom_tasks_df
+    if not ct_df.empty:
+        enabled_ct = ct_df[ct_df["Enabled"] == True]
+        for _, row in enabled_ct.iterrows():
+            day_str = str(row["Day"]) if pd.notna(row["Day"]) else "T"
+            offset = int(day_str.replace("T+", "").replace("T", "0")) if "+" in day_str else 0
+            start = datetime.combine(T_DATE + timedelta(days=offset), row["Start Time"])
+            dur = float(row["Duration Mins"])
+            end = add_mins(start, dur)
+            hub_name = row["Hub"]
+            rate, _ = get_hub_info(hub_name)
+            staff = int(row["Staff"])
+            cost = (dur / 60) * rate * staff
+            tasks.append(dict(Task=row["Task"], Start=start, End=end, Hub=hub_name, Cat=row["Category"], Cost_Raw=cost, Staff=staff))
 
-    # Custom Tasks (always runs)
-    for ct in st.session_state.custom_tasks:
-        c_hub_name = ct["hub"] if ct["hub"] in hd else list(hd.keys())[0]
-        c_start = datetime.combine(T_DATE + timedelta(days=ct.get("offset", 0)), ct["time"])
-        c_hub_info = hd[c_hub_name]
-        c_dur = float(ct["dur"])
-        c_end = add_mins(c_start, c_dur)
-        c_cost = (c_dur / 60) * c_hub_info.hourly_rate * ct["staff"]
-        tasks.append(dict(
-            Task=ct["name"], Start=c_start, End=c_end,
-            Hub=c_hub_name, Cat=ct.get("cat", "Custom Task"),
-            Cost_Raw=c_cost, Staff=ct["staff"]
-        ))
-
+    # --- Guard ---
     if not tasks:
-        st.error("No tasks to display! Please upload a file or turn Baseline Tasks back on.")
+        st.error("No tasks to display! Upload a CSV or enable baseline tasks.")
         st.stop()
 
     df_tasks = pd.DataFrame(tasks)
@@ -382,12 +408,12 @@ with tab_dash:
     st.plotly_chart(fig, use_container_width=True)
 
     # --- TABLE ---
-    with st.expander("📋 Detailed Workload & Unit Economics", expanded=True):
+    with st.expander("Detailed Workload & Unit Economics", expanded=True):
         display_df = df_tasks.copy().sort_values(by="Start")
         display_df['Day'] = display_df['Start'].apply(get_day_label)
         display_df['Duration'] = ((display_df['End'] - display_df['Start']).dt.total_seconds() / 60).astype(int).astype(str) + " min"
         display_df['Start GMT'] = display_df['Start'].dt.strftime("%H:%M")
         display_df['End GMT'] = display_df['End'].dt.strftime("%H:%M")
-        display_df['Cost/Fund'] = (display_df['Cost_Raw'] / total_funds).apply(lambda x: f"${x:.2f}" if x > 0 else "-")
+        display_df['Cost/Fund'] = (display_df['Cost_Raw'] / max(total_funds, 1)).apply(lambda x: f"${x:.2f}" if x > 0 else "-")
         display_df['Total Cost'] = display_df['Cost_Raw'].apply(lambda x: f"${x:,.2f}" if x > 0 else "-")
         st.dataframe(display_df[['Day', 'Task', 'Cat', 'Hub', 'Start GMT', 'End GMT', 'Duration', 'Staff', 'Total Cost', 'Cost/Fund']], use_container_width=True, hide_index=True)
