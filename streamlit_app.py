@@ -2,7 +2,10 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import re
+import json
 from html import escape as html_escape
 from datetime import datetime, timedelta, time, date
 from difflib import SequenceMatcher
@@ -10,7 +13,7 @@ from difflib import SequenceMatcher
 # ---------------------------------------------------------------------
 # Page config & Styling
 # ---------------------------------------------------------------------
-st.set_page_config(page_title="UCITS Multi-Fund Capacity Planner", page_icon="🏦", layout="wide")
+st.set_page_config(page_title="UCITS Multi-Fund Capacity Planner", page_icon="\U0001f3e6", layout="wide")
 
 st.markdown("""
 <style>
@@ -25,6 +28,8 @@ st.markdown("""
     .info-card .value { font-size: 1rem; font-weight: 600; color: #c8d8e8; }
     .cost-text { color: #85e89d; }
     .unit-text { color: #fbbf24; font-family: monospace; }
+    .delta-pos { color: #00d4aa; font-weight: 600; }
+    .delta-neg { color: #ff4444; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -95,16 +100,13 @@ def auto_map_columns(source_columns, field_aliases=FIELD_ALIASES):
             if src in used:
                 continue
             src_lower = src.strip().lower()
-            # Exact alias match
             if src_lower in aliases_lower:
                 best_score, best_col = 1.0, src
                 break
-            # Substring match
             for alias in aliases_lower:
                 if alias in src_lower or src_lower in alias:
                     if 0.85 > best_score:
                         best_score, best_col = 0.85, src
-            # Fuzzy match
             for alias in aliases_lower:
                 score = SequenceMatcher(None, src_lower, alias).ratio()
                 if score > best_score:
@@ -191,7 +193,6 @@ def transform_and_validate(raw_df, col_map, hub_names):
     for idx, raw_row in raw_df.iterrows():
         row_warns = []
         row = {}
-        # Task
         if col_map.get("Task"):
             t = str(raw_row[col_map["Task"]]).strip()
             row["Task"] = t if t and t.lower() not in ("nan", "none", "") else f"Unnamed Task {idx+1}"
@@ -200,22 +201,16 @@ def transform_and_validate(raw_df, col_map, hub_names):
         else:
             row["Task"] = f"Unnamed Task {idx+1}"
             row_warns.append("No task column mapped")
-        # Category
         row["Category"] = clean_category(raw_row[col_map["Category"]]) if col_map.get("Category") else "Custom Task"
-        # Hub
         row["Hub"] = clean_hub(raw_row[col_map["Hub"]], hub_names) if col_map.get("Hub") else (hub_names[0] if hub_names else "EMEA - Dublin")
-        # Staff
         row["Staff"] = clean_staff(raw_row[col_map["Staff"]]) if col_map.get("Staff") else 1
-        # Start Time
         row["Start Time"] = clean_time(raw_row[col_map["Start Time"]]) if col_map.get("Start Time") else time(9, 0)
-        # Day
         row["Day"] = clean_day(raw_row[col_map["Day"]]) if col_map.get("Day") else "T"
-        # Duration
         if col_map.get("Duration Mins"):
             d = clean_duration(raw_row[col_map["Duration Mins"]])
             if d is None:
                 row_warns.append(f"Invalid duration: {raw_row[col_map['Duration Mins']]}")
-                row["Duration Mins"] = 30  # Fallback
+                row["Duration Mins"] = 30
             else:
                 row["Duration Mins"] = d
         else:
@@ -226,6 +221,30 @@ def transform_and_validate(raw_df, col_map, hub_names):
         if row_warns:
             warnings.append((idx + 2, row_warns))
     return pd.DataFrame(rows), warnings
+
+# ---------------------------------------------------------------------
+# Scenario Snapshot Helpers
+# ---------------------------------------------------------------------
+def scenario_to_json(scenario):
+    """Serialize a scenario dict to JSON-safe format."""
+    s = scenario.copy()
+    # Convert task rows (datetime objects) to ISO strings
+    serialized_tasks = []
+    for t in s["tasks"]:
+        st_copy = t.copy()
+        st_copy["Start"] = t["Start"].isoformat()
+        st_copy["End"] = t["End"].isoformat()
+        serialized_tasks.append(st_copy)
+    s["tasks"] = serialized_tasks
+    return json.dumps(s, indent=2, default=str)
+
+def json_to_scenario(json_str):
+    """Deserialize a JSON string back to a scenario dict."""
+    s = json.loads(json_str)
+    for t in s["tasks"]:
+        t["Start"] = datetime.fromisoformat(t["Start"])
+        t["End"] = datetime.fromisoformat(t["End"])
+    return s
 
 # ---------------------------------------------------------------------
 # Session State Defaults
@@ -279,6 +298,10 @@ if 'import_preview_df' not in st.session_state:
 if 'import_warnings' not in st.session_state:
     st.session_state.import_warnings = []
 
+# Scenario storage
+if 'saved_scenarios' not in st.session_state:
+    st.session_state.saved_scenarios = []
+
 def reset_import_wizard():
     st.session_state.import_step = 0
     st.session_state.import_raw_df = None
@@ -320,7 +343,7 @@ with st.sidebar:
 # ---------------------------------------------------------------------
 st.markdown(f'<div class="main-header"><h1>Enterprise Capacity &amp; Timelines</h1><p>Modeling {int(total_funds)} funds concurrently.</p></div>', unsafe_allow_html=True)
 
-tab_dash, tab_config = st.tabs(["Dashboard", "Configuration"])
+tab_dash, tab_compare, tab_config = st.tabs(["Dashboard", "Compare Scenarios", "Configuration"])
 
 # =====================================================================
 # TAB: CONFIGURATION
@@ -337,10 +360,7 @@ with tab_config:
             "Time": st.column_config.TimeColumn("Time", format="HH:mm"),
             "Day": st.column_config.SelectboxColumn("Day", options=DAY_OPTIONS, width="small"),
         },
-        hide_index=True,
-        use_container_width=True,
-        key="milestone_editor",
-        num_rows="fixed",
+        hide_index=True, use_container_width=True, key="milestone_editor", num_rows="fixed",
     )
     st.session_state.milestone_df = edited_milestones
 
@@ -359,10 +379,7 @@ with tab_config:
             "Hourly Rate ($)": st.column_config.NumberColumn("Rate ($/hr)", min_value=1.0, max_value=500.0, step=1.0, format="$%.0f"),
             "Overhead Factor": st.column_config.NumberColumn("Overhead", min_value=0.0, max_value=1.0, step=0.005, format="%.3f"),
         },
-        hide_index=True,
-        use_container_width=True,
-        num_rows="dynamic",
-        key="hub_editor",
+        hide_index=True, use_container_width=True, num_rows="dynamic", key="hub_editor",
     )
     st.session_state.hub_df = edited_hubs
 
@@ -373,9 +390,7 @@ with tab_config:
     st.caption("Configure each task's hub, staffing, and timing. Toggle **Enabled** to include/exclude individual tasks. "
                "**Waterfall tasks** (Avg Mins/Fund > 0) chain sequentially after the Valuation Point. "
                "**Fixed tasks** (Fixed Mins > 0, like data feeds) start at their specified Start Time.")
-
     all_hub_options = get_hub_names() + ["Custody", "Market Data"]
-
     edited_baseline = st.data_editor(
         st.session_state.baseline_df,
         column_config={
@@ -389,10 +404,7 @@ with tab_config:
             "Day": st.column_config.SelectboxColumn("Day", options=DAY_OPTIONS, width="small"),
             "Enabled": st.column_config.CheckboxColumn("On", default=True),
         },
-        hide_index=True,
-        use_container_width=True,
-        num_rows="dynamic",
-        key="baseline_editor",
+        hide_index=True, use_container_width=True, num_rows="dynamic", key="baseline_editor",
     )
     st.session_state.baseline_df = edited_baseline
 
@@ -402,14 +414,10 @@ with tab_config:
     # SMART IMPORT WIZARD
     # =================================================================
     st.subheader("Task Import")
-
     step = st.session_state.import_step
 
-    # ---- STEP 0: Upload ----
     if step == 0:
-        st.caption("Upload a CSV or Excel file with task data. Column names don't need to match exactly — the wizard will help you map them.")
-
-        # Template download
+        st.caption("Upload a CSV or Excel file with task data. Column names don't need to match exactly \u2014 the wizard will help you map them.")
         hub_names = get_hub_names()
         default_hub = hub_names[0] if hub_names else "EMEA - Dublin"
         template_df = pd.DataFrame({
@@ -436,61 +444,40 @@ with tab_config:
             except Exception as e:
                 st.error(f"Could not read file: {e}")
 
-    # ---- STEP 1: Raw Preview ----
     elif step == 1:
         raw_df = st.session_state.import_raw_df
         if raw_df is None:
-            reset_import_wizard()
-            st.rerun()
-
-        st.caption("**Step 1 of 3** — Preview your uploaded data.")
+            reset_import_wizard(); st.rerun()
+        st.caption("**Step 1 of 3** \u2014 Preview your uploaded data.")
         st.info(f"{len(raw_df)} rows, {len(raw_df.columns)} columns detected: {', '.join(raw_df.columns.tolist())}")
         st.dataframe(raw_df.head(10), use_container_width=True, hide_index=True)
-
         col_a, col_b = st.columns(2)
         if col_a.button("Proceed to Column Mapping", type="primary"):
-            st.session_state.import_step = 2
-            st.rerun()
+            st.session_state.import_step = 2; st.rerun()
         if col_b.button("Cancel", key="cancel_step1"):
-            reset_import_wizard()
-            st.rerun()
+            reset_import_wizard(); st.rerun()
 
-    # ---- STEP 2: Column Mapping ----
     elif step == 2:
         raw_df = st.session_state.import_raw_df
         if raw_df is None:
-            reset_import_wizard()
-            st.rerun()
-
-        st.caption("**Step 2 of 3** — Map your file's columns to the required fields. Auto-detected mappings are pre-selected.")
-
+            reset_import_wizard(); st.rerun()
+        st.caption("**Step 2 of 3** \u2014 Map your file's columns to the required fields. Auto-detected mappings are pre-selected.")
         source_cols = ["-- Skip --"] + list(raw_df.columns)
         auto_map = st.session_state.import_col_map
         mapped_count = sum(1 for v in auto_map.values() if v is not None)
         st.info(f"{mapped_count} of {len(FIELD_ALIASES)} fields auto-detected.")
-
         new_map = {}
         for target in FIELD_ALIASES.keys():
             auto_val = auto_map.get(target)
             default_idx = source_cols.index(auto_val) if auto_val in source_cols else 0
             required = " *" if target in ("Task", "Duration Mins") else ""
-            chosen = st.selectbox(
-                f"{target}{required}",
-                source_cols,
-                index=default_idx,
-                key=f"map_{target}"
-            )
+            chosen = st.selectbox(f"{target}{required}", source_cols, index=default_idx, key=f"map_{target}")
             new_map[target] = None if chosen == "-- Skip --" else chosen
-
-        # Validation: Task and Duration are required
         can_proceed = True
         if not new_map.get("Task"):
-            st.warning("**Task** column is required. Please map it to proceed.")
-            can_proceed = False
+            st.warning("**Task** column is required."); can_proceed = False
         if not new_map.get("Duration Mins"):
-            st.warning("**Duration Mins** column is required. Please map it to proceed.")
-            can_proceed = False
-
+            st.warning("**Duration Mins** column is required."); can_proceed = False
         col_a, col_b, col_c = st.columns(3)
         if col_a.button("Apply Mapping & Preview", type="primary", disabled=not can_proceed):
             st.session_state.import_col_map = new_map
@@ -498,26 +485,18 @@ with tab_config:
             preview_df, warns = transform_and_validate(raw_df, new_map, hub_names)
             st.session_state.import_preview_df = preview_df
             st.session_state.import_warnings = warns
-            st.session_state.import_step = 3
-            st.rerun()
+            st.session_state.import_step = 3; st.rerun()
         if col_b.button("Back", key="back_step2"):
-            st.session_state.import_step = 1
-            st.rerun()
+            st.session_state.import_step = 1; st.rerun()
         if col_c.button("Cancel", key="cancel_step2"):
-            reset_import_wizard()
-            st.rerun()
+            reset_import_wizard(); st.rerun()
 
-    # ---- STEP 3: Review & Import ----
     elif step == 3:
         preview_df = st.session_state.import_preview_df
         warns = st.session_state.import_warnings
         if preview_df is None:
-            reset_import_wizard()
-            st.rerun()
-
-        st.caption("**Step 3 of 3** — Review the cleaned data. Fix any issues in the table below, then import.")
-
-        # Show warnings
+            reset_import_wizard(); st.rerun()
+        st.caption("**Step 3 of 3** \u2014 Review the cleaned data. Fix any issues in the table below, then import.")
         if warns:
             with st.expander(f"{len(warns)} row(s) have warnings", expanded=False):
                 for row_num, row_warns in warns:
@@ -525,8 +504,6 @@ with tab_config:
                         st.warning(f"Row {row_num}: {w}")
         else:
             st.success("All rows cleaned successfully.")
-
-        # Editable preview
         hub_names = get_hub_names()
         edited_preview = st.data_editor(
             preview_df,
@@ -540,39 +517,28 @@ with tab_config:
                 "Duration Mins": st.column_config.NumberColumn("Duration (mins)", min_value=1, max_value=1440, step=1),
                 "Enabled": st.column_config.CheckboxColumn("On", default=True),
             },
-            hide_index=True,
-            use_container_width=True,
-            num_rows="dynamic",
-            key="import_preview_editor",
+            hide_index=True, use_container_width=True, num_rows="dynamic", key="import_preview_editor",
         )
-
-        # Import options
         opt_col1, opt_col2 = st.columns(2)
         import_mode = opt_col1.radio("Import mode", ["Replace existing tasks", "Append to existing tasks"], index=0, key="import_mode")
         hide_baseline = opt_col2.checkbox("Hide baseline tasks after import", value=True, key="import_hide_baseline")
-
         col_a, col_b, col_c = st.columns(3)
         if col_a.button(f"Import {len(edited_preview)} Tasks", type="primary"):
             if import_mode == "Append to existing tasks" and not st.session_state.custom_tasks_df.empty:
-                st.session_state.custom_tasks_df = pd.concat(
-                    [st.session_state.custom_tasks_df, edited_preview], ignore_index=True
-                )
+                st.session_state.custom_tasks_df = pd.concat([st.session_state.custom_tasks_df, edited_preview], ignore_index=True)
             else:
                 st.session_state.custom_tasks_df = edited_preview.copy()
             if hide_baseline:
                 st.session_state.use_baseline = False
-            reset_import_wizard()
-            st.rerun()
+            reset_import_wizard(); st.rerun()
         if col_b.button("Back to Mapping", key="back_step3"):
-            st.session_state.import_step = 2
-            st.rerun()
+            st.session_state.import_step = 2; st.rerun()
         if col_c.button("Cancel", key="cancel_step3"):
-            reset_import_wizard()
-            st.rerun()
+            reset_import_wizard(); st.rerun()
 
     st.divider()
 
-    # --- CUSTOM TASKS EDITOR (always visible) ---
+    # --- CUSTOM TASKS EDITOR ---
     st.subheader("Imported Custom Tasks")
     st.caption("Edit imported tasks in-place: change hub, staff, timing, or toggle them on/off.")
     if st.session_state.custom_tasks_df.empty:
@@ -590,10 +556,7 @@ with tab_config:
                 "Duration Mins": st.column_config.NumberColumn("Duration (mins)", min_value=1, max_value=1440, step=1),
                 "Enabled": st.column_config.CheckboxColumn("On", default=True),
             },
-            hide_index=True,
-            use_container_width=True,
-            num_rows="dynamic",
-            key="custom_editor",
+            hide_index=True, use_container_width=True, num_rows="dynamic", key="custom_editor",
         )
         st.session_state.custom_tasks_df = edited_custom
 
@@ -605,7 +568,6 @@ with tab_dash:
     ms_df = st.session_state.milestone_df
     bl_df = st.session_state.baseline_df
 
-    # --- Parse milestones ---
     def get_milestone_dt(name):
         row = ms_df[ms_df["Milestone"] == name]
         if row.empty:
@@ -620,10 +582,8 @@ with tab_dash:
     VALUATION_POINT = get_milestone_dt("Valuation Point")
     NAV_DEADLINE = get_milestone_dt("NAV Delivery SLA")
 
-    # --- Build baseline waterfall ---
     if st.session_state.use_baseline:
         enabled = bl_df[bl_df["Enabled"] == True].copy()
-
         fixed_tasks = enabled[enabled["Fixed Mins"] > 0]
         waterfall_tasks = enabled[(enabled["Avg Mins/Fund"] > 0) & (enabled["Fixed Mins"] == 0)]
 
@@ -639,24 +599,20 @@ with tab_dash:
 
         cursor = max(latest_fixed_end, VALUATION_POINT)
         prev_hub = None
-
         for _, row in waterfall_tasks.iterrows():
             hub_name = row["Hub"]
             staff = int(row["Staff"])
             avg = float(row["Avg Mins/Fund"])
             rate, overhead = get_hub_info(hub_name)
-
             wait = latency_gap if (prev_hub is not None and prev_hub != hub_name) else 0
             actual_start = add_mins(cursor, wait)
             dur = get_concurrent_duration(total_funds * avg, max(staff, 1), overhead)
             end = add_mins(actual_start, dur)
             cost = (dur / 60) * rate * staff
-
             tasks.append(dict(Task=row["Task"], Start=actual_start, End=end, Hub=hub_name, Cat=row["Category"], Cost_Raw=cost, Staff=staff))
             cursor = end
             prev_hub = hub_name
 
-    # --- Custom tasks ---
     ct_df = st.session_state.custom_tasks_df
     if not ct_df.empty:
         enabled_ct = ct_df[ct_df["Enabled"] == True]
@@ -672,7 +628,6 @@ with tab_dash:
             cost = (dur / 60) * rate * staff
             tasks.append(dict(Task=row["Task"], Start=start, End=end, Hub=hub_name, Cat=row["Category"], Cost_Raw=cost, Staff=staff))
 
-    # --- Guard ---
     if not tasks:
         st.error("No tasks to display! Upload a file or enable baseline tasks.")
         st.stop()
@@ -680,7 +635,6 @@ with tab_dash:
     df_tasks = pd.DataFrame(tasks)
     final_end_time = df_tasks['End'].max()
     sla_met = final_end_time <= NAV_DEADLINE
-
     total_op_cost = df_tasks['Cost_Raw'].sum()
     total_headcount = df_tasks['Staff'].sum()
     unit_cost_overall = total_op_cost / max(total_funds, 1)
@@ -707,12 +661,10 @@ with tab_dash:
 
     fig = px.timeline(df_tasks, x_start="Start", x_end="End", y="Task", color="Cat", color_discrete_map=CATEGORY_COLORS, hover_data=["Hub", "Cost"])
     fig.update_yaxes(autorange="reversed")
-
     fig.add_vline(x=INVESTOR_CUTOFF.timestamp() * 1000, line_dash="dot", line_color="#3b82f6", annotation_text=f"Investor {get_day_label(INVESTOR_CUTOFF)} {fmt_gmt(INVESTOR_CUTOFF)}", annotation_position="bottom right")
     fig.add_vline(x=TRADE_CUTOFF.timestamp() * 1000, line_dash="dot", line_color="#a855f7", annotation_text=f"Trade {get_day_label(TRADE_CUTOFF)} {fmt_gmt(TRADE_CUTOFF)}", annotation_position="bottom right")
     fig.add_vline(x=VALUATION_POINT.timestamp() * 1000, line_dash="dash", line_color="#ff9933", annotation_text=f"VP {get_day_label(VALUATION_POINT)} {fmt_gmt(VALUATION_POINT)}", annotation_position="top left")
     fig.add_vline(x=NAV_DEADLINE.timestamp() * 1000, line_dash="dash", line_color="#ff4444", annotation_text=f"SLA {get_day_label(NAV_DEADLINE)} {fmt_gmt(NAV_DEADLINE)}", annotation_position="top left")
-
     fig.update_layout(plot_bgcolor="#0a1628", paper_bgcolor="#0a1628", font=dict(color="#c8d8e8"), height=500, margin=dict(l=10, r=30, t=30, b=30), xaxis=dict(range=[min_start, max_end_chart]))
     st.plotly_chart(fig, use_container_width=True)
 
@@ -726,3 +678,237 @@ with tab_dash:
         display_df['Cost/Fund'] = (display_df['Cost_Raw'] / max(total_funds, 1)).apply(lambda x: f"${x:.2f}" if x > 0 else "-")
         display_df['Total Cost'] = display_df['Cost_Raw'].apply(lambda x: f"${x:,.2f}" if x > 0 else "-")
         st.dataframe(display_df[['Day', 'Task', 'Cat', 'Hub', 'Start GMT', 'End GMT', 'Duration', 'Staff', 'Total Cost', 'Cost/Fund']], use_container_width=True, hide_index=True)
+
+    # --- SAVE SCENARIO ---
+    st.divider()
+    st.subheader("Save Current Scenario")
+    save_col1, save_col2 = st.columns([3, 1])
+    scenario_name = save_col1.text_input("Scenario name", placeholder="e.g. India 15 staff baseline", key="scenario_name_input")
+    if save_col2.button("Save Snapshot", type="primary"):
+        if scenario_name.strip():
+            scenario = {
+                "name": scenario_name.strip(),
+                "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "total_funds": int(total_funds),
+                "latency_gap": int(latency_gap),
+                "use_baseline": bool(st.session_state.use_baseline),
+                "tasks": tasks,
+                "metrics": {
+                    "sla_met": bool(sla_met),
+                    "completion": final_end_time.isoformat(),
+                    "buffer_mins": int(buffer),
+                    "total_cost": round(float(total_op_cost), 2),
+                    "total_staff": int(total_headcount),
+                    "unit_cost": round(float(unit_cost_overall), 2),
+                },
+                "milestones": {
+                    "investor_cutoff": INVESTOR_CUTOFF.isoformat(),
+                    "trade_cutoff": TRADE_CUTOFF.isoformat(),
+                    "valuation_point": VALUATION_POINT.isoformat(),
+                    "nav_deadline": NAV_DEADLINE.isoformat(),
+                },
+            }
+            st.session_state.saved_scenarios.append(scenario)
+            st.success(f"Saved \"{scenario_name.strip()}\" ({len(st.session_state.saved_scenarios)} scenarios stored)")
+        else:
+            st.warning("Please enter a scenario name.")
+
+# =====================================================================
+# TAB: COMPARE SCENARIOS
+# =====================================================================
+with tab_compare:
+    saved = st.session_state.saved_scenarios
+
+    # --- Import scenario from JSON ---
+    st.subheader("Scenario Library")
+
+    imp_col1, imp_col2 = st.columns([3, 1])
+    with imp_col1:
+        json_upload = st.file_uploader("Import a scenario (.json)", type=["json"], key="json_import")
+        if json_upload is not None:
+            try:
+                imported = json_to_scenario(json_upload.read().decode("utf-8"))
+                # Avoid duplicates by name+time
+                exists = any(s["name"] == imported["name"] and s["saved_at"] == imported["saved_at"] for s in saved)
+                if not exists:
+                    st.session_state.saved_scenarios.append(imported)
+                    st.success(f"Imported \"{imported['name']}\"")
+                    st.rerun()
+                else:
+                    st.info(f"\"{imported['name']}\" already exists in your library.")
+            except Exception as e:
+                st.error(f"Could not import scenario: {e}")
+
+    if not saved:
+        st.info("No scenarios saved yet. Go to the **Dashboard** tab, run a scenario, and click **Save Snapshot** to save it here.")
+    else:
+        # --- Scenario History Table ---
+        history_rows = []
+        for i, s in enumerate(saved):
+            m = s["metrics"]
+            history_rows.append({
+                "#": i + 1,
+                "Name": s["name"],
+                "Saved": s["saved_at"],
+                "Funds": s["total_funds"],
+                "SLA": "Met" if m["sla_met"] else "Breach",
+                "Completed": datetime.fromisoformat(m["completion"]).strftime("%H:%M"),
+                "Buffer": f"{m['buffer_mins']} min",
+                "Cost": f"${m['total_cost']:,.2f}",
+                "Staff": m["total_staff"],
+                "$/Fund": f"${m['unit_cost']:.2f}",
+            })
+        st.dataframe(pd.DataFrame(history_rows), use_container_width=True, hide_index=True)
+
+        # --- Export & Delete ---
+        exp_col1, exp_col2, exp_col3 = st.columns(3)
+        export_idx = exp_col1.selectbox("Select scenario", range(len(saved)), format_func=lambda i: saved[i]["name"], key="export_select")
+        exp_col2.download_button(
+            "Export as JSON",
+            data=scenario_to_json(saved[export_idx]),
+            file_name=f"scenario_{saved[export_idx]['name'].replace(' ', '_')}.json",
+            mime="application/json",
+        )
+        if exp_col3.button("Delete selected scenario"):
+            st.session_state.saved_scenarios.pop(export_idx)
+            st.rerun()
+
+        st.divider()
+
+        # --- Side-by-Side Comparison ---
+        if len(saved) >= 2:
+            st.subheader("Compare Two Scenarios")
+            cmp_col1, cmp_col2 = st.columns(2)
+            idx_a = cmp_col1.selectbox("Scenario A", range(len(saved)), format_func=lambda i: saved[i]["name"], key="cmp_a")
+            idx_b = cmp_col2.selectbox("Scenario B", range(len(saved)), format_func=lambda i: saved[i]["name"], index=min(1, len(saved)-1), key="cmp_b")
+
+            sc_a = saved[idx_a]
+            sc_b = saved[idx_b]
+            m_a = sc_a["metrics"]
+            m_b = sc_b["metrics"]
+
+            # Delta metrics
+            st.markdown("#### Key Metrics Comparison")
+            d1, d2, d3, d4 = st.columns(4)
+
+            cost_delta = m_b["total_cost"] - m_a["total_cost"]
+            cost_color = "delta-pos" if cost_delta <= 0 else "delta-neg"
+            cost_sign = "+" if cost_delta > 0 else ""
+            d1.markdown(f'<div class="info-card"><div class="label">Total Cost</div>'
+                       f'<div class="value">{html_escape(sc_a["name"])}: ${m_a["total_cost"]:,.0f}</div>'
+                       f'<div class="value">{html_escape(sc_b["name"])}: ${m_b["total_cost"]:,.0f}</div>'
+                       f'<div class="{cost_color}">{cost_sign}${cost_delta:,.0f}</div></div>', unsafe_allow_html=True)
+
+            buf_delta = m_b["buffer_mins"] - m_a["buffer_mins"]
+            buf_color = "delta-pos" if buf_delta >= 0 else "delta-neg"
+            buf_sign = "+" if buf_delta > 0 else ""
+            d2.markdown(f'<div class="info-card"><div class="label">SLA Buffer</div>'
+                       f'<div class="value">{html_escape(sc_a["name"])}: {m_a["buffer_mins"]} min</div>'
+                       f'<div class="value">{html_escape(sc_b["name"])}: {m_b["buffer_mins"]} min</div>'
+                       f'<div class="{buf_color}">{buf_sign}{buf_delta} min</div></div>', unsafe_allow_html=True)
+
+            staff_delta = m_b["total_staff"] - m_a["total_staff"]
+            staff_sign = "+" if staff_delta > 0 else ""
+            d3.markdown(f'<div class="info-card"><div class="label">Total Staff</div>'
+                       f'<div class="value">{html_escape(sc_a["name"])}: {m_a["total_staff"]}</div>'
+                       f'<div class="value">{html_escape(sc_b["name"])}: {m_b["total_staff"]}</div>'
+                       f'<div class="value">{staff_sign}{staff_delta}</div></div>', unsafe_allow_html=True)
+
+            unit_delta = m_b["unit_cost"] - m_a["unit_cost"]
+            unit_color = "delta-pos" if unit_delta <= 0 else "delta-neg"
+            unit_sign = "+" if unit_delta > 0 else ""
+            d4.markdown(f'<div class="info-card"><div class="label">Unit Cost</div>'
+                       f'<div class="value">{html_escape(sc_a["name"])}: ${m_a["unit_cost"]:.2f}</div>'
+                       f'<div class="value">{html_escape(sc_b["name"])}: ${m_b["unit_cost"]:.2f}</div>'
+                       f'<div class="{unit_color}">{unit_sign}${unit_delta:.2f}</div></div>', unsafe_allow_html=True)
+
+            # --- Stacked Gantt Charts ---
+            st.markdown("#### Timeline Comparison")
+
+            df_a = pd.DataFrame(sc_a["tasks"])
+            df_b = pd.DataFrame(sc_b["tasks"])
+
+            # Ensure datetime types (may be strings from JSON import)
+            for df_sc in [df_a, df_b]:
+                for col in ["Start", "End"]:
+                    df_sc[col] = pd.to_datetime(df_sc[col])
+
+            df_a["Cost"] = df_a["Cost_Raw"].apply(lambda x: f"${x:,.2f}")
+            df_b["Cost"] = df_b["Cost_Raw"].apply(lambda x: f"${x:,.2f}")
+
+            # Shared time axis
+            all_starts = pd.concat([df_a["Start"], df_b["Start"]])
+            all_ends = pd.concat([df_a["End"], df_b["End"]])
+            shared_min = all_starts.min() - timedelta(hours=1)
+            shared_max = all_ends.max() + timedelta(hours=2)
+
+            nav_a = datetime.fromisoformat(sc_a["milestones"]["nav_deadline"])
+            nav_b = datetime.fromisoformat(sc_b["milestones"]["nav_deadline"])
+            shared_max = max(shared_max, nav_a, nav_b) + timedelta(hours=1)
+
+            fig_a = px.timeline(df_a, x_start="Start", x_end="End", y="Task", color="Cat",
+                               color_discrete_map=CATEGORY_COLORS, hover_data=["Hub", "Cost"],
+                               title=f"{sc_a['name']} ({sc_a['total_funds']} funds)")
+            fig_a.update_yaxes(autorange="reversed")
+            fig_a.add_vline(x=nav_a.timestamp() * 1000, line_dash="dash", line_color="#ff4444",
+                           annotation_text=f"SLA {fmt_gmt(nav_a)}", annotation_position="top left")
+            fig_a.update_layout(plot_bgcolor="#0a1628", paper_bgcolor="#0a1628", font=dict(color="#c8d8e8"),
+                               height=350, margin=dict(l=10, r=30, t=40, b=10), showlegend=False,
+                               xaxis=dict(range=[shared_min, shared_max]))
+            st.plotly_chart(fig_a, use_container_width=True)
+
+            fig_b = px.timeline(df_b, x_start="Start", x_end="End", y="Task", color="Cat",
+                               color_discrete_map=CATEGORY_COLORS, hover_data=["Hub", "Cost"],
+                               title=f"{sc_b['name']} ({sc_b['total_funds']} funds)")
+            fig_b.update_yaxes(autorange="reversed")
+            fig_b.add_vline(x=nav_b.timestamp() * 1000, line_dash="dash", line_color="#ff4444",
+                           annotation_text=f"SLA {fmt_gmt(nav_b)}", annotation_position="top left")
+            fig_b.update_layout(plot_bgcolor="#0a1628", paper_bgcolor="#0a1628", font=dict(color="#c8d8e8"),
+                               height=350, margin=dict(l=10, r=30, t=40, b=10), showlegend=False,
+                               xaxis=dict(range=[shared_min, shared_max]))
+            st.plotly_chart(fig_b, use_container_width=True)
+
+            # --- Task-by-Task Delta Table ---
+            with st.expander("Task-by-Task Comparison", expanded=False):
+                # Build lookup by task name
+                tasks_a = {t["Task"]: t for t in sc_a["tasks"]}
+                tasks_b = {t["Task"]: t for t in sc_b["tasks"]}
+                all_task_names = list(dict.fromkeys(list(tasks_a.keys()) + list(tasks_b.keys())))
+
+                delta_rows = []
+                for tn in all_task_names:
+                    ta = tasks_a.get(tn)
+                    tb = tasks_b.get(tn)
+                    if ta and tb:
+                        dur_a = (datetime.fromisoformat(ta["End"]) - datetime.fromisoformat(ta["Start"])).total_seconds() / 60 if isinstance(ta["Start"], str) else (ta["End"] - ta["Start"]).total_seconds() / 60
+                        dur_b = (datetime.fromisoformat(tb["End"]) - datetime.fromisoformat(tb["Start"])).total_seconds() / 60 if isinstance(tb["Start"], str) else (tb["End"] - tb["Start"]).total_seconds() / 60
+                        delta_rows.append({
+                            "Task": tn,
+                            f"Hub (A)": ta.get("Hub", "-"),
+                            f"Hub (B)": tb.get("Hub", "-"),
+                            f"Staff (A)": ta.get("Staff", 0),
+                            f"Staff (B)": tb.get("Staff", 0),
+                            f"Duration A": f"{int(dur_a)} min",
+                            f"Duration B": f"{int(dur_b)} min",
+                            "Delta": f"{int(dur_b - dur_a):+d} min",
+                            f"Cost (A)": f"${ta.get('Cost_Raw', 0):,.0f}",
+                            f"Cost (B)": f"${tb.get('Cost_Raw', 0):,.0f}",
+                        })
+                    elif ta:
+                        dur_a = (datetime.fromisoformat(ta["End"]) - datetime.fromisoformat(ta["Start"])).total_seconds() / 60 if isinstance(ta["Start"], str) else (ta["End"] - ta["Start"]).total_seconds() / 60
+                        delta_rows.append({"Task": tn, f"Hub (A)": ta.get("Hub", "-"), f"Hub (B)": "-",
+                                          f"Staff (A)": ta.get("Staff", 0), f"Staff (B)": "-",
+                                          f"Duration A": f"{int(dur_a)} min", f"Duration B": "-",
+                                          "Delta": "Only in A", f"Cost (A)": f"${ta.get('Cost_Raw', 0):,.0f}", f"Cost (B)": "-"})
+                    elif tb:
+                        dur_b = (datetime.fromisoformat(tb["End"]) - datetime.fromisoformat(tb["Start"])).total_seconds() / 60 if isinstance(tb["Start"], str) else (tb["End"] - tb["Start"]).total_seconds() / 60
+                        delta_rows.append({"Task": tn, f"Hub (A)": "-", f"Hub (B)": tb.get("Hub", "-"),
+                                          f"Staff (A)": "-", f"Staff (B)": tb.get("Staff", 0),
+                                          f"Duration A": "-", f"Duration B": f"{int(dur_b)} min",
+                                          "Delta": "Only in B", f"Cost (A)": "-", f"Cost (B)": f"${tb.get('Cost_Raw', 0):,.0f}"})
+
+                if delta_rows:
+                    st.dataframe(pd.DataFrame(delta_rows), use_container_width=True, hide_index=True)
+
+        elif len(saved) == 1:
+            st.info("Save at least 2 scenarios to enable side-by-side comparison.")
