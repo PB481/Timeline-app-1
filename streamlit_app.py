@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import io
+from html import escape as html_escape
 from datetime import datetime, timedelta, time, date
 from dataclasses import dataclass
 
@@ -64,7 +65,7 @@ if 'baseline_names' not in st.session_state:
         "t_settlement": "Settlement"
     }
 
-if 'baseline_times' not in st.session_state or "t_trade_files" not in st.session_state.baseline_times:
+if 'baseline_times' not in st.session_state or "trade_files" not in st.session_state.baseline_times:
     st.session_state.baseline_times = {
         "trade_files": {"time": time(16, 30), "offset": 0},
         "pricing": {"time": time(16, 15), "offset": 0},
@@ -88,11 +89,14 @@ CATEGORY_COLORS = {
 }
 CATEGORIES = list(CATEGORY_COLORS.keys())
 
-T_DATE = date.today()
+def get_t_date() -> date:
+    return date.today()
+
+T_DATE = get_t_date()
 DAY_OPTIONS = ["T", "T+1", "T+2", "T+3", "T+4", "T+5"]
 
 def fmt_gmt(dt: datetime) -> str: return dt.strftime("%H:%M")
-def add_mins(dt: datetime, mins: float) -> datetime: return dt + timedelta(minutes=int(mins))
+def add_mins(dt: datetime, mins: float) -> datetime: return dt + timedelta(minutes=round(mins))
 def get_concurrent_duration(total_workload_mins: float, n_staff: int, overhead: float) -> float:
     if n_staff == 1: return float(total_workload_mins)
     return (total_workload_mins / n_staff) * (1 + (overhead * (n_staff - 1)))
@@ -117,6 +121,8 @@ with st.sidebar:
         avg_cash = st.number_input("Cash Flow", 1.0, 60.0, 4.0)
         avg_recon = st.number_input("Reconciliation", 1.0, 60.0, 15.0)
         avg_nav = st.number_input("NAV Review", 1.0, 60.0, 10.0)
+        avg_reporting = st.number_input("Reporting", 1.0, 60.0, 3.0)
+        avg_settlement = st.number_input("Settlement", 1.0, 60.0, 4.0)
 
     st.divider()
     st.markdown("## 👥 Hub Assignment")
@@ -134,7 +140,7 @@ with st.sidebar:
 # ---------------------------------------------------------------------
 # Main Application Header & Tabs
 # ---------------------------------------------------------------------
-st.markdown(f'<div class="main-header"><h1>🏦 Enterprise Capacity & Timelines</h1><p>Modeling {total_funds} funds concurrently.</p></div>', unsafe_allow_html=True)
+st.markdown(f'<div class="main-header"><h1>Enterprise Capacity &amp; Timelines</h1><p>Modeling {int(total_funds)} funds concurrently.</p></div>', unsafe_allow_html=True)
 
 tab_dash, tab_config = st.tabs(["📊 Capacity Dashboard", "⚙️ Data & Configuration Manager"])
 
@@ -217,23 +223,45 @@ with tab_config:
         if uploaded_file is not None:
             try:
                 imported_df = pd.read_csv(uploaded_file)
-                st.session_state.custom_tasks = [] # Clear old custom tasks
-                
-                for index, row in imported_df.iterrows():
-                    hub_val = row["Hub"] if row["Hub"] in HUBS else HUBS[0]
-                    cat_val = row["Category"] if row["Category"] in CATEGORIES else "Custom Task"
-                    time_val = datetime.strptime(row["Start_Time"], "%H:%M").time()
-                    st.session_state.custom_tasks.append({
-                        "name": str(row["Task_Name"]), "cat": cat_val, "hub": hub_val,
-                        "time": time_val, "offset": int(row["Day_Offset"]),
-                        "dur": int(row["Duration_Mins"]), "staff": int(row["Staff_Count"])
-                    })
-                
-                # FEATURE 1: Take out baseline tasks automatically when file is loaded
-                st.session_state.use_baseline = False
-                
-                st.success(f"✅ Imported {len(imported_df)} tasks! Baseline tasks have been hidden.")
-                if st.button("Render Timeline"): st.rerun()
+                required_cols = {"Task_Name", "Category", "Hub", "Start_Time", "Day_Offset", "Duration_Mins", "Staff_Count"}
+                missing_cols = required_cols - set(imported_df.columns)
+                if missing_cols:
+                    st.error(f"Missing required columns: {', '.join(sorted(missing_cols))}")
+                else:
+                    errors = []
+                    st.session_state.custom_tasks = []
+
+                    for index, row in imported_df.iterrows():
+                        row_num = index + 2  # 1-indexed + header
+                        dur_val = int(row["Duration_Mins"])
+                        staff_val = int(row["Staff_Count"])
+                        offset_val = int(row["Day_Offset"])
+                        if dur_val <= 0:
+                            errors.append(f"Row {row_num}: Duration_Mins must be > 0 (got {dur_val})")
+                            continue
+                        if staff_val <= 0:
+                            errors.append(f"Row {row_num}: Staff_Count must be > 0 (got {staff_val})")
+                            continue
+                        if offset_val < 0:
+                            errors.append(f"Row {row_num}: Day_Offset must be >= 0 (got {offset_val})")
+                            continue
+
+                        hub_val = row["Hub"] if row["Hub"] in HUBS else HUBS[0]
+                        cat_val = row["Category"] if row["Category"] in CATEGORIES else "Custom Task"
+                        time_val = datetime.strptime(str(row["Start_Time"]).strip(), "%H:%M").time()
+                        st.session_state.custom_tasks.append({
+                            "name": str(row["Task_Name"]), "cat": cat_val, "hub": hub_val,
+                            "time": time_val, "offset": offset_val,
+                            "dur": dur_val, "staff": staff_val
+                        })
+
+                    if errors:
+                        for e in errors:
+                            st.warning(e)
+
+                    st.session_state.use_baseline = False
+                    st.success(f"Imported {len(st.session_state.custom_tasks)} tasks! Baseline tasks have been hidden.")
+                    if st.button("Render Timeline"): st.rerun()
             except Exception as e:
                 st.error(f"Error parsing file. Details: {e}")
 
@@ -246,7 +274,6 @@ with tab_config:
 # =====================================================================
 with tab_dash:
     tasks = []
-    warnings = []
     bn = st.session_state.baseline_names
     hd = st.session_state.hub_dict
     bt = st.session_state.baseline_times
@@ -257,122 +284,87 @@ with tab_dash:
     VALUATION_POINT = datetime.combine(T_DATE + timedelta(days=ms["vp"]["offset"]), ms["vp"]["time"])
     NAV_DEADLINE = datetime.combine(T_DATE + timedelta(days=ms["nav"]["offset"]), ms["nav"]["time"])
 
-    # FEATURE 2: New Waterfall Logic for Baseline Tasks
+    def append_waterfall_task(task_name, start_dt, avg_per_fund, hub_name, staff, cat, prev_hub=None):
+        """Build a waterfall task, applying inter-hub latency when the hub changes."""
+        hub_info = hd[hub_name]
+        wait = latency_gap if (prev_hub is not None and prev_hub != hub_name) else 0
+        actual_start = add_mins(start_dt, wait)
+        dur = get_concurrent_duration(total_funds * avg_per_fund, staff, hub_info.overhead_factor)
+        end = add_mins(actual_start, dur)
+        cost = (dur / 60) * hub_info.hourly_rate * staff
+        tasks.append(dict(Task=task_name, Start=actual_start, End=end, Hub=hub_name, Cat=cat, Cost_Raw=cost, Staff=staff))
+        return end, hub_name
+
+    # Baseline Waterfall
     if st.session_state.use_baseline:
-        # 1. Ingestion
+        # 1. Ingestion (fixed-duration data feeds)
         trade_dt = datetime.combine(T_DATE + timedelta(days=bt["trade_files"]["offset"]), bt["trade_files"]["time"])
         pricing_dt = datetime.combine(T_DATE + timedelta(days=bt["pricing"]["offset"]), bt["pricing"]["time"])
-        
+
         tasks.append(dict(Task=bn["t_trade_files"], Start=trade_dt, End=add_mins(trade_dt, 5), Hub="Custody", Cat="Data Ingestion", Cost_Raw=0, Staff=0))
         tasks.append(dict(Task=bn["t_pricing"], Start=pricing_dt, End=add_mins(pricing_dt, 5), Hub="Market Data", Cat="Data Ingestion", Cost_Raw=0, Staff=0))
 
-        # Core Waterfall Sequence starts at max of Files arriving or VP
-        waterfall_start = max(trade_dt, pricing_dt, VALUATION_POINT)
-        
-        # 2. Corp Actions
-        c_dur = get_concurrent_duration(total_funds * avg_corp, staff_proc, hd[hub_proc].overhead_factor)
-        c_end = add_mins(waterfall_start, c_dur)
-        tasks.append(dict(Task=bn["t_corp"], Start=waterfall_start, End=c_end, Hub=hub_proc, Cat="Processing", Cost_Raw=(c_dur/60)*hd[hub_proc].hourly_rate*staff_proc, Staff=staff_proc))
+        # Core waterfall starts at max of data arrival or Valuation Point
+        cursor = max(trade_dt, pricing_dt, VALUATION_POINT)
+        prev_hub = None
 
-        # 3. Income
-        i_wait = latency_gap if hub_proc != hub_proc else 0 # (Same hub here, so 0, but good for future scaling)
-        i_start = add_mins(c_end, i_wait)
-        i_dur = get_concurrent_duration(total_funds * avg_inc, staff_proc, hd[hub_proc].overhead_factor)
-        i_end = add_mins(i_start, i_dur)
-        tasks.append(dict(Task=bn["t_income"], Start=i_start, End=i_end, Hub=hub_proc, Cat="Processing", Cost_Raw=(i_dur/60)*hd[hub_proc].hourly_rate*staff_proc, Staff=staff_proc))
+        # 2-5. Processing chain (all same hub, so no inter-hub latency)
+        cursor, prev_hub = append_waterfall_task(bn["t_corp"],   cursor, avg_corp,  hub_proc, staff_proc, "Processing", prev_hub)
+        cursor, prev_hub = append_waterfall_task(bn["t_income"], cursor, avg_inc,   hub_proc, staff_proc, "Processing", prev_hub)
+        cursor, prev_hub = append_waterfall_task(bn["t_deriv"],  cursor, avg_deriv, hub_proc, staff_proc, "Processing", prev_hub)
+        cursor, prev_hub = append_waterfall_task(bn["t_cash"],   cursor, avg_cash,  hub_proc, staff_proc, "Processing", prev_hub)
 
-        # 4. Derivatives
-        d_start = add_mins(i_end, 0)
-        d_dur = get_concurrent_duration(total_funds * avg_deriv, staff_proc, hd[hub_proc].overhead_factor)
-        d_end = add_mins(d_start, d_dur)
-        tasks.append(dict(Task=bn["t_deriv"], Start=d_start, End=d_end, Hub=hub_proc, Cat="Processing", Cost_Raw=(d_dur/60)*hd[hub_proc].hourly_rate*staff_proc, Staff=staff_proc))
+        # 6. Reconciliation (possible hub handoff from processing)
+        cursor, prev_hub = append_waterfall_task(bn["t_recon"], cursor, avg_recon, hub_recon, staff_recon, "Reconciliation", prev_hub)
 
-        # 5. Cash Flow
-        cf_start = add_mins(d_end, 0)
-        cf_dur = get_concurrent_duration(total_funds * avg_cash, staff_proc, hd[hub_proc].overhead_factor)
-        cf_end = add_mins(cf_start, cf_dur)
-        tasks.append(dict(Task=bn["t_cash"], Start=cf_start, End=cf_end, Hub=hub_proc, Cat="Processing", Cost_Raw=(cf_dur/60)*hd[hub_proc].hourly_rate*staff_proc, Staff=staff_proc))
+        # 7. NAV Review & Publication (possible hub handoff from recon)
+        cursor, prev_hub = append_waterfall_task(bn["t_nav"], cursor, avg_nav, hub_nav, staff_nav, "Review & Pub", prev_hub)
 
-        # 6. Reconciliation (Handoff possible)
-        r_wait = latency_gap if hub_proc != hub_recon else 0
-        r_start = add_mins(cf_end, r_wait)
-        r_dur = get_concurrent_duration(total_funds * avg_recon, staff_recon, hd[hub_recon].overhead_factor)
-        r_end = add_mins(r_start, r_dur)
-        tasks.append(dict(Task=bn["t_recon"], Start=r_start, End=r_end, Hub=hub_recon, Cat="Reconciliation", Cost_Raw=(r_dur/60)*hd[hub_recon].hourly_rate*staff_recon, Staff=staff_recon))
+        # 8-9. Post-NAV (same hub as review)
+        cursor, prev_hub = append_waterfall_task(bn["t_reporting"],  cursor, avg_reporting,  hub_nav, staff_nav, "Post-NAV", prev_hub)
+        cursor, prev_hub = append_waterfall_task(bn["t_settlement"], cursor, avg_settlement, hub_nav, staff_nav, "Post-NAV", prev_hub)
 
-        # 7. NAV Review & Pub (Handoff possible)
-        n_wait = latency_gap if hub_recon != hub_nav else 0
-        n_start = add_mins(r_end, n_wait)
-        n_dur = get_concurrent_duration(total_funds * avg_nav, staff_nav, hd[hub_nav].overhead_factor)
-        n_end = add_mins(n_start, n_dur)
-        tasks.append(dict(Task=bn["t_nav"], Start=n_start, End=n_end, Hub=hub_nav, Cat="Review & Pub", Cost_Raw=(n_dur/60)*hd[hub_nav].hourly_rate*staff_nav, Staff=staff_nav))
-
-        # 8. Reporting
-        rep_start = add_mins(n_end, 0)
-        rep_dur = get_concurrent_duration(total_funds * 3.0, staff_nav, hd[hub_nav].overhead_factor) # Fixed 3 mins avg
-        rep_end = add_mins(rep_start, rep_dur)
-        tasks.append(dict(Task=bn["t_reporting"], Start=rep_start, End=rep_end, Hub=hub_nav, Cat="Post-NAV", Cost_Raw=(rep_dur/60)*hd[hub_nav].hourly_rate*staff_nav, Staff=staff_nav))
-
-        # 9. Settlement
-        set_start = add_mins(rep_end, 0)
-        set_dur = get_concurrent_duration(total_funds * 4.0, staff_nav, hd[hub_nav].overhead_factor) # Fixed 4 mins avg
-        set_end = add_mins(set_start, set_dur)
-        tasks.append(dict(Task=bn["t_settlement"], Start=set_start, End=set_end, Hub=hub_nav, Cat="Post-NAV", Cost_Raw=(set_dur/60)*hd[hub_nav].hourly_rate*staff_nav, Staff=staff_nav))
-
-    # Custom Tasks Injection (Always runs)
+    # Custom Tasks (always runs)
     for ct in st.session_state.custom_tasks:
-        c_hub_name = ct["hub"] if ct["hub"] in hd else list(hd.keys())[0] 
+        c_hub_name = ct["hub"] if ct["hub"] in hd else list(hd.keys())[0]
         c_start = datetime.combine(T_DATE + timedelta(days=ct.get("offset", 0)), ct["time"])
         c_hub_info = hd[c_hub_name]
-        
-        # FIX: Treat uploaded durations as exact/literal time elapsed. 
         c_dur = float(ct["dur"])
         c_end = add_mins(c_start, c_dur)
-        
-        # Calculate cost based on exact duration * staff * rate
         c_cost = (c_dur / 60) * c_hub_info.hourly_rate * ct["staff"]
-        
         tasks.append(dict(
-            Task=ct["name"], 
-            Start=c_start, 
-            End=c_end, 
-            Hub=c_hub_name, 
-            Cat=ct.get("cat", "Custom Task"), 
-            Cost_Raw=c_cost, 
-            Staff=ct["staff"]
+            Task=ct["name"], Start=c_start, End=c_end,
+            Hub=c_hub_name, Cat=ct.get("cat", "Custom Task"),
+            Cost_Raw=c_cost, Staff=ct["staff"]
         ))
 
-    # Calculations based on final task in array
     if not tasks:
         st.error("No tasks to display! Please upload a file or turn Baseline Tasks back on.")
         st.stop()
-        
+
     df_tasks = pd.DataFrame(tasks)
     final_end_time = df_tasks['End'].max()
-    
-    # Calculate SLA against the final end time of the active tasks (baseline or custom)
     sla_met = final_end_time <= NAV_DEADLINE
-    
+
     total_op_cost = df_tasks['Cost_Raw'].sum()
     total_headcount = df_tasks['Staff'].sum()
-    unit_cost_overall = total_op_cost / total_funds
+    unit_cost_overall = total_op_cost / max(total_funds, 1)
     df_tasks['Cost'] = df_tasks['Cost_Raw'].apply(lambda x: f"${x:,.2f}")
 
     # --- TOP METRICS ---
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     with col1:
         sla_class = "sla-met" if sla_met else "sla-breach"
-        st.markdown(f'<div class="sla-card {sla_class}"><div class="sla-label">SLA Status</div><div class="sla-value">{"✅ MET" if sla_met else "❌ BREACH"}</div></div>', unsafe_allow_html=True)
-    with col2: st.markdown(f'<div class="info-card"><div class="label">Book Completed</div><div class="value">{get_day_label(final_end_time)} {fmt_gmt(final_end_time)}</div></div>', unsafe_allow_html=True)
-    with col3: 
+        sla_label = "MET" if sla_met else "BREACH"
+        st.markdown(f'<div class="sla-card {sla_class}"><div class="sla-label">SLA Status</div><div class="sla-value">{html_escape(sla_label)}</div></div>', unsafe_allow_html=True)
+    with col2: st.markdown(f'<div class="info-card"><div class="label">Book Completed</div><div class="value">{html_escape(get_day_label(final_end_time))} {html_escape(fmt_gmt(final_end_time))}</div></div>', unsafe_allow_html=True)
+    with col3:
         buffer = int((NAV_DEADLINE - final_end_time).total_seconds() / 60)
         color = "#00d4aa" if buffer >= 0 else "#ff4444"
         st.markdown(f'<div class="info-card"><div class="label">Buffer to SLA</div><div class="value" style="color:{color}">{buffer} mins</div></div>', unsafe_allow_html=True)
     with col4: st.markdown(f'<div class="info-card"><div class="label">Total Variable Cost</div><div class="value cost-text">${total_op_cost:,.2f}</div></div>', unsafe_allow_html=True)
     with col5: st.markdown(f'<div class="info-card"><div class="label">Total Managed Staff</div><div class="value">{int(total_headcount)} FTEs</div></div>', unsafe_allow_html=True)
     with col6: st.markdown(f'<div class="info-card"><div class="label">Unit Economics</div><div class="value unit-text">${unit_cost_overall:,.2f} / Fund</div></div>', unsafe_allow_html=True)
-
-    for w in warnings: st.warning(w)
 
     # --- GANTT CHART ---
     min_start = min(df_tasks['Start'].min(), INVESTOR_CUTOFF) - timedelta(hours=1)
